@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: vietnamese-rag-qdrant
+    restart: unless-stopped
+    ports:
+      # Cổng 6333: HTTP API & Web Dashboard (http://localhost:6333/dashboard)
+      - "6333:6333"
+      # Cổng 6334: gRPC API (dành cho kết nối hiệu năng cao)
+      - "6334:6334"
+    volumes:
+      # Lưu trữ dữ liệu vector bền vững qua Named Volume (tối ưu tốc độ đọc ghi trên Windows/WSL2)
+      - qdrant_storage:/qdrant/storage
+      # Nếu muốn mount trực tiếp ra thư mục máy tính, bỏ comment dòng dưới và comment dòng trên:
+      # - ./data/qdrant_storage:/qdrant/storage
+    environment:
+      # Bật Web UI Dashboard
+      - QDRANT__SERVICE__ENABLE_STATIC_CONTENT=true
+      # Mức độ ghi log: INFO | DEBUG | WARN | ERROR
+      - QDRANT__LOG_LEVEL=INFO
+      # Tắt gửi telemetry ẩn danh (tùy chọn)
+      - QDRANT__TELEMETRY_DISABLED=true
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  qdrant_storage:
+    name: vietnamese_rag_qdrant_data

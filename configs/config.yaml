@@ -1,0 +1,179 @@
+# ==============================================================================
+# Vietnamese RAG System Configuration
+# ==============================================================================
+
+app:
+  name: "vietnamese-rag"
+  version: "0.1.0"
+  env: "development" # development | staging | production
+  framework: "llamaindex" # llamaindex (ưu tiên) | langchain
+  seed: 42
+  log_level: "INFO" # DEBUG | INFO | WARNING | ERROR
+
+# ------------------------------------------------------------------------------
+# Data & Ingestion
+# ------------------------------------------------------------------------------
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  supported_extensions:
+    - ".pdf"
+    - ".docx"
+    - ".txt"
+  pdf_ocr:
+    enabled: true
+    languages: "vie+eng"
+    dpi: 300
+    min_text_chars: 40
+    tesseract_cmd: null # Nếu Tesseract chưa có trong PATH, điền đường dẫn tesseract.exe
+
+chunking:
+  strategy: "recursive" # recursive | semantic
+  recursive:
+    chunk_size: 512 # Kích thước char
+    chunk_overlap: 64 # Độ gối đầu giữa các chunk
+    # Bộ phân tách câu/đoạn tối ưu hóa cho cấu trúc văn bản tiếng Việt
+    separators:
+      - "\n\n"
+      - "\n"
+      - ". "
+      - "? "
+      - "! "
+      - "; "
+      - " "
+      - ""
+  structured:
+    max_tokens: 512 # Token theo tokenizer của embedding BAAI/bge-m3
+    overlap_tokens: 64 # Chỉ dùng khi buộc phải chia một đơn vị prose dài
+  semantic:
+    buffer_size: 1
+    breakpoint_percentile_threshold: 95
+
+# ------------------------------------------------------------------------------
+# Embedding Model
+# ------------------------------------------------------------------------------
+embedding:
+  # Lựa chọn 1: "BAAI/bge-m3" (Multilingual, 1024 dim, dense + sparse + colbert)
+  # Lựa chọn 2: "bkai-foundation-models/vietnamese-bi-encoder" (768 dim, chuyên tiếng Việt)
+  model_name: "BAAI/bge-m3"
+  provider: "huggingface" # huggingface | sentence-transformers
+  dimension: 1024 # 1024 cho bge-m3, 768 cho vietnamese-bi-encoder
+  device: "cpu" # cuda | cpu | mps
+  batch_size: 8
+  normalize_embeddings: true
+  max_length: 8192 # bge-m3 hỗ trợ tối đa 8192 context length
+
+# ------------------------------------------------------------------------------
+# Vector Database (Qdrant qua Docker)
+# ------------------------------------------------------------------------------
+vector_store:
+  type: "qdrant"
+  host: "localhost"
+  port: 6333
+  grpc_port: 6334
+  prefer_grpc: false
+  collection_name: "vietnamese_docs_stage5_validation_20261017"
+  dense_vector_name: dense # null for the legacy unnamed dense vector; "dense" for versioned indexes
+  distance: "Cosine" # Cosine | Dot | Euclidean
+  timeout: 30
+
+# ------------------------------------------------------------------------------
+# Retrieval & Reranker Pipeline
+# ------------------------------------------------------------------------------
+retrieval:
+  top_k: 10 # Số lượng chunk lấy từ vector DB trước khi rerank
+
+  hybrid_search:
+    enabled: false # Kết hợp Dense vector + Sparse/BM25
+    dense_weight: 0.6 # Trọng số cho vector search
+    sparse_weight: 0.4 # Trọng số cho từ khóa (BM25)
+    candidate_k: 10 # Số lượng chunk lấy từ mỗi phương pháp trước khi kết hợp
+    candidate_multiplier: 5 # Số lượng chunk tối thiểu để rerank (top_k * candidate_multiplier)
+    min_candidates: 10 # Số lượng chunk tối thiểu để rerank (nếu hybrid_search không được bật, vẫn áp dụng min_candidates)
+    rrf_k: 60 # Reciprocal Rank Fusion k (chỉ áp dụng khi hybrid_search được bật)
+
+  reranker:
+    enabled: false # Bật/tắt Reranker
+    # Lựa chọn: "bge" (local transformer) | "cohere" (Cohere API)
+    provider: "bge"
+    top_n: 4 # Số lượng chunk chất lượng nhất giữ lại cho LLM
+
+    bge:
+      model_name: "BAAI/bge-reranker-v2-m3"
+      device: "cpu" # cuda | cpu | mps
+      batch_size: 4
+      max_length: 1024
+
+    cohere:
+      model_name: "rerank-multilingual-v3.0"
+      # API key đọc từ biến môi trường COHERE_API_KEY
+
+  context_expansion:
+    enabled: false # Bật/tắt mở rộng ngữ cảnh bằng cách lấy các chunk lân cận
+    neighbor_window: 1 # Only adjacent chunks in the same document and section
+    max_prompt_tokens: 8192 # Counted with the configured LLM tokenizer
+    tokenizer_name: null # Optional Hugging Face tokenizer override for Ollama
+
+# ------------------------------------------------------------------------------
+# Large Language Model (LLM) Generation
+# ------------------------------------------------------------------------------
+llm:
+  default_provider: "groq" # groq | ollama
+
+  groq:
+    # Model đề xuất trên Groq:
+    # - openai/gpt-oss-120b (nếu khả dụng)
+    # - llama-3.3-70b-versatile (mạnh, tốc độ cao, hỗ trợ tiếng Việt rất tốt)
+    # - mixtral-8x7b-32768
+    model_name: "openai/gpt-oss-120b"
+    temperature: 0.1
+    max_tokens: 1500
+    timeout: 60
+    # API key đọc từ biến môi trường GROQ_API_KEY
+
+  ollama:
+    base_url: "http://localhost:11434"
+    # Model cục bộ gợi ý:
+    # - qwen2.5:14b hoặc qwen2.5:7b (hỗ trợ tiếng Việt xuất sắc)
+    # - vinallama:7b
+    model_name: "qwen2.5:7b"
+    temperature: 0.1
+    max_tokens: 1500
+    timeout: 120
+
+# ------------------------------------------------------------------------------
+# Prompt Templates
+# ------------------------------------------------------------------------------
+prompts:
+  qa_template_path: "configs/prompts/qa_prompt.yaml"
+  eval_template_path: "configs/prompts/eval_prompt.yaml"
+
+# ------------------------------------------------------------------------------
+# Evaluation (Ragas Framework)
+# ------------------------------------------------------------------------------
+evaluation:
+  testset_path: "data/eval/testset.jsonl"
+  metrics:
+    - "context_recall"
+    - "context_precision"
+    - "faithfulness"
+    - "answer_relevancy"
+
+  # LLM và Embedding dùng để chấm điểm Ragas
+  judge_llm:
+    provider: "groq"
+    model_name: "openai/gpt-oss-120b"
+    temperature: 0.1
+
+  judge_embedding:
+    provider: "huggingface"
+    model_name: "BAAI/bge-m3"
+    device: "cpu"
+
+# ------------------------------------------------------------------------------
+# FastAPI Service
+# ------------------------------------------------------------------------------
+api:
+  host: "0.0.0.0"
+  port: 8000
+  reload: true

@@ -1,0 +1,91 @@
+# ==============================================================================
+# Environment & Secret Keys (QUAN TRỌNG: Tuyệt đối không commit API keys)
+# ==============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# ==============================================================================
+# Python Virtual Environments & Packages
+# ==============================================================================
+.venv/
+venv/
+ENV/
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==============================================================================
+# Python Bytecode & Runtime Caches
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ==============================================================================
+# Jupyter Notebook Checkpoints
+# ==============================================================================
+.ipynb_checkpoints/
+
+# ==============================================================================
+# Data & Large Files / Outputs
+# ==============================================================================
+# Dữ liệu tài liệu thô kích thước lớn
+data/raw/*
+!data/raw/.gitkeep
+
+# Dữ liệu đã chunking & tiền xử lý
+data/processed/*
+!data/processed/.gitkeep
+
+# Kết quả chạy đánh giá tự động (giữ lại testset.jsonl)
+data/eval/*.csv
+data/eval/evaluation_results*.json
+data/eval/missed_*.csv
+
+# Vector Database Storage (Qdrant, Chroma, SQLite,...)
+qdrant_storage/
+chroma_data/
+*.sqlite3
+*.db
+
+# ==============================================================================
+# Logs & Temporary Files
+# ==============================================================================
+*.log
+logs/
+*.tmp
+*.temp
+
+# ==============================================================================
+# OS & IDE Configuration
+# ==============================================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+

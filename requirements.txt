@@ -1,0 +1,8 @@
+PyMuPDF>=1.24
+pytesseract>=0.3.13
+Pillow>=10
+transformers>=4.40
+tiktoken>=0.7
+fastapi>=0.110
+uvicorn[standard]>=0.29
+requests>=2.31

@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise RAG Studio Dashboard</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Alpine.js for interactive state -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                        },
+                        darkbg: '#0b0f19',
+                        darkcard: '#111827',
+                        darkborder: '#1f2937'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0b0f19; }
+        ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #374151; }
+    </style>
+</head>
+<body class="bg-darkbg text-slate-200 font-sans antialiased h-screen flex overflow-hidden" x-data="{ 
+    activeTab: 'chat', 
+    showCitationDrawer: true, 
+    selectedChunk: { id: 1, doc: 'Quy_trinh_Bao_hanh_2026.pdf', score: 0.912, text: 'Thiết bị gặp sự cố phần cứng nằm trong thời hạn 12 tháng kể từ ngày kích hoạt sẽ được đổi mới 1-đổi-1 trong vòng 3 ngày làm việc kể từ khi Trung tâm Dịch vụ nhận được sản phẩm.', page: 4, chunkId: 'chk_98231' },
+    ragMode: 'hybrid',
+    topK: 5,
+    rerank: true
+}">
+
+    <!-- Sidebar Navigation -->
+    <aside class="w-64 bg-darkcard border-r border-darkborder flex flex-col justify-between shrink-0">
+        <div>
+            <!-- App Logo -->
+            <div class="h-16 flex items-center px-6 border-b border-darkborder gap-3">
+                <div class="p-2 bg-indigo-600/20 text-indigo-400 rounded-lg">
+                    <i data-lucide="cpu" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-slate-100 tracking-wide text-sm">NexusRAG AI</h1>
+                    <p class="text-xs text-slate-400">Enterprise Engine v2.4</p>
+                </div>
+            </div>
+
+            <!-- Nav Links -->
+            <nav class="p-4 space-y-1">
+                <button @click="activeTab = 'chat'" :class="activeTab === 'chat' ? 'bg-indigo-600/10 text-indigo-400 border-r-2 border-indigo-500' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                    <i data-lucide="message-square text-lg"></i>
+                    <span>Chat & Playground</span>
+                </button>
+
+                <button @click="activeTab = 'documents'" :class="activeTab === 'documents' ? 'bg-indigo-600/10 text-indigo-400 border-r-2 border-indigo-500' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'" class="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                    <div class="flex items-center gap-3">
+                        <i data-lucide="database text-lg"></i>
+                        <span>Kho Tri Thức (KB)</span>
+                    </div>
+                    <span class="bg-indigo-950 text-indigo-300 text-xs px-2 py-0.5 rounded-full border border-indigo-800">12</span>
+                </button>
+
+                <button @click="activeTab = 'config'" :class="activeTab === 'config' ? 'bg-indigo-600/10 text-indigo-400 border-r-2 border-indigo-500' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                    <i data-lucide="sliders text-lg"></i>
+                    <span>Cấu hình Pipeline</span>
+                </button>
+
+                <button @click="activeTab = 'metrics'" :class="activeTab === 'metrics' ? 'bg-indigo-600/10 text-indigo-400 border-r-2 border-indigo-500' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all">
+                    <i data-lucide="activity text-lg"></i>
+                    <span>Giám sát & Metrics</span>
+                </button>
+            </nav>
+        </div>
+
+        <!-- System Status Footer -->
+        <div class="p-4 border-t border-darkborder space-y-3">
+            <div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800 text-xs space-y-2">
+                <div class="flex items-center justify-between">
+                    <span class="text-slate-400">Vector DB:</span>
+                    <span class="text-emerald-400 font-mono flex items-center gap-1">
+                        <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span> Qdrant
+                    </span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-slate-400">Total Vectors:</span>
+                    <span class="text-slate-200 font-mono">148,209</span>
+                </div>
+                <div class="flex items-center justify-between">
+                    <span class="text-slate-400">Embedding Model:</span>
+                    <span class="text-slate-200 font-mono text-[10px]">text-embed-3-large</span>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-3 pt-2">
+                <div class="w-8 h-8 rounded-full bg-indigo-600/30 border border-indigo-500/50 flex items-center justify-center font-bold text-xs text-indigo-300">
+                    AD
+                </div>
+                <div class="text-xs overflow-hidden">
+                    <p class="font-medium text-slate-200 truncate">Admin Engine</p>
+                    <p class="text-slate-400 truncate text-[11px]">admin@rag-system.ai</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col min-w-0 bg-darkbg">
+        <!-- Top Navigation Header -->
+        <header class="h-16 border-b border-darkborder bg-darkcard/50 backdrop-blur px-6 flex items-center justify-between shrink-0">
+            <div class="flex items-center gap-4">
+                <h2 class="text-base font-semibold text-slate-100" x-text="
+                    activeTab === 'chat' ? 'RAG Chat Playground' : 
+                    activeTab === 'documents' ? 'Quản lý Tài liệu & Vector Database' : 
+                    activeTab === 'config' ? 'Cấu hình RAG & Chunking Parameters' : 'Đánh giá & Analytics Metrics'
+                "></h2>
+                <span class="bg-slate-800 text-slate-300 text-xs px-2.5 py-1 rounded-md border border-slate-700">Collection: <strong class="text-indigo-400">Policy_Docs_v2</strong></span>
+            </div>
+
+            <div class="flex items-center gap-3">
+                <!-- RAG Mode Indicator -->
+                <div class="flex items-center bg-slate-900 rounded-lg p-1 border border-slate-800 text-xs">
+                    <span class="px-2.5 py-1 text-slate-400">Search Mode:</span>
+                    <span class="px-2.5 py-1 bg-indigo-600/30 text-indigo-300 rounded font-medium border border-indigo-500/30 uppercase tracking-wider text-[10px]" x-text="ragMode"></span>
+                </div>
+
+                <button class="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition">
+                    <i data-lucide="bell" class="w-4 h-4"></i>
+                </button>
+                <button class="p-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition">
+                    <i data-lucide="settings" class="w-4 h-4"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- VIEW 1: CHAT PLAYGROUND (With Source Drawer) -->
+        <div x-show="activeTab === 'chat'" class="flex-1 flex overflow-hidden">
+            <!-- Left Chat Workspace -->
+            <div class="flex-1 flex flex-col justify-between overflow-hidden relative">
+                
+                <!-- Chat Messages Stream -->
+                <div class="flex-1 overflow-y-auto p-6 space-y-6">
+                    
+                    <!-- System Info Banner -->
+                    <div class="bg-indigo-950/40 border border-indigo-800/50 rounded-xl p-4 flex items-start gap-3">
+                        <i data-lucide="info" class="w-5 h-5 text-indigo-400 shrink-0 mt-0.5"></i>
+                        <div class="text-xs space-y-1">
+                            <p class="text-indigo-200 font-medium">Chế độ RAG Grounding đang hoạt động</p>
+                            <p class="text-indigo-300/70">Mọi câu trả lời được kiểm tra đối soát trực tiếp từ Kho Tri Thức doanh nghiệp. Các đoạn văn bản trích dẫn sẽ hiển thị chi tiết ở khung bên phải.</p>
+                        </div>
+                    </div>
+
+                    <!-- User Message -->
+                    <div class="flex justify-end">
+                        <div class="bg-indigo-600 text-white rounded-2xl rounded-tr-none px-5 py-3.5 max-w-2xl text-sm shadow-lg shadow-indigo-600/10 space-y-1">
+                            <p>Chính sách bảo hành sản phẩm của công ty quy định thế nào về lỗi phần cứng và thời gian xử lý đổi trả?</p>
+                            <span class="text-[10px] text-indigo-200 block text-right">10:42 AM</span>
+                        </div>
+                    </div>
+
+                    <!-- AI Response with RAG Annotations -->
+                    <div class="flex gap-4 max-w-3xl">
+                        <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white shrink-0 shadow-md">
+                            <i data-lucide="bot" class="w-5 h-5"></i>
+                        </div>
+                        <div class="space-y-3">
+                            <div class="bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-none p-5 text-sm text-slate-200 space-y-3 shadow-sm">
+                                <p>Theo quy định trong tài liệu chính sách của doanh nghiệp, quy trình bảo hành lỗi phần cứng được quy định rõ như sau:</p>
+                                
+                                <ul class="list-disc pl-5 space-y-2 text-slate-300">
+                                    <li>
+                                        Thiết bị gặp sự cố phần cứng thuộc thời hạn 12 tháng kể từ ngày kích hoạt sẽ được áp dụng chính sách <strong>1-đổi-1 trong vòng 3 ngày làm việc</strong> 
+                                        <button @click="showCitationDrawer = true" class="inline-flex items-center gap-1 text-[11px] font-mono bg-indigo-950 text-indigo-400 border border-indigo-800/80 rounded px-1.5 py-0.5 hover:bg-indigo-900 transition ml-1">
+                                            [Nguồn 1: Score 0.91]
+                                        </button>.
+                                    </li>
+                                    <li>
+                                        Đối với các trường hợp quá thời hạn 1-đổi-1, thời gian sửa chữa tối đa không vượt quá <strong>7 ngày làm việc</strong> 
+                                        <button @click="showCitationDrawer = true" class="inline-flex items-center gap-1 text-[11px] font-mono bg-indigo-950 text-indigo-400 border border-indigo-800/80 rounded px-1.5 py-0.5 hover:bg-indigo-900 transition ml-1">
+                                            [Nguồn 2: Score 0.86]
+                                        </button>.
+                                    </li>
+                                </ul>
+
+                                <p class="text-xs text-slate-400 pt-2 border-t border-slate-800">
+                                    <em>Lưu ý: Yêu cầu sản phẩm còn nguyên tem bảo hành và không có dấu hiệu va đập cơ học nặng.</em>
+                                </p>
+                            </div>
+
+                            <!-- Execution Performance Metadata Bar -->
+                            <div class="flex items-center gap-4 text-[11px] text-slate-400 px-1 font-mono">
+                                <span class="flex items-center gap-1 text-emerald-400"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i> Grounded</span>
+                                <span>• Total Latency: <strong>840ms</strong></span>
+                                <span>• Retrieval: <strong>42ms</strong></span>
+                                <span>• Contexts used: <strong>2/5 chunks</strong></span>
+                                <button @click="showCitationDrawer = !showCitationDrawer" class="text-indigo-400 hover:underline flex items-center gap-1 ml-auto">
+                                    <i data-lucide="file-search" class="w-3.5 h-3.5"></i> Xem Context Trích Dẫn
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Chat Input Box -->
+                <div class="p-4 border-t border-darkborder bg-darkcard/30">
+                    <div class="max-w-4xl mx-auto space-y-2">
+                        <!-- Quick Settings Above Input -->
+                        <div class="flex items-center justify-between text-xs px-2 text-slate-400">
+                            <div class="flex items-center gap-4">
+                                <label class="flex items-center gap-1.5 cursor-pointer">
+                                    <input type="checkbox" checked class="rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-0">
+                                    <span>Query Rewriting (HyDE)</span>
+                                </label>
+                                <label class="flex items-center gap-1.5 cursor-pointer">
+                                    <input type="checkbox" x-model="rerank" class="rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-0">
+                                    <span>Cohere Reranker</span>
+                                </label>
+                            </div>
+                            <span>Top-K: <strong class="text-indigo-400" x-text="topK"></strong> Chunks</span>
+                        </div>
+
+                        <!-- Main Input Form -->
+                        <div class="relative flex items-center">
+                            <textarea rows="2" placeholder="Hỏi bất kỳ điều gì dựa trên kho tài liệu đã upload..." class="w-full bg-slate-900 border border-slate-800 rounded-xl pl-4 pr-28 py-3 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 resize-none shadow-inner"></textarea>
+                            <div class="absolute right-3 flex items-center gap-2">
+                                <button class="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800">
+                                    <i data-lucide="paperclip" class="w-4 h-4"></i>
+                                </button>
+                                <button class="bg-indigo-600 hover:bg-indigo-500 text-white p-2.5 rounded-lg font-medium transition flex items-center justify-center">
+                                    <i data-lucide="send" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Right Drawer: Context & Retrieved Chunks Panel -->
+            <div x-show="showCitationDrawer" class="w-96 border-l border-darkborder bg-darkcard flex flex-col shrink-0">
+                <div class="p-4 border-b border-darkborder flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="layers" class="w-4 h-4 text-indigo-400"></i>
+                        <h3 class="text-sm font-semibold text-slate-200">Retrieved Chunks (Top-K)</h3>
+                    </div>
+                    <button @click="showCitationDrawer = false" class="text-slate-400 hover:text-slate-200">
+                        <i data-lucide="x" class="w-4 h-4"></i>
+                    </button>
+                </div>
+
+                <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                    <!-- Chunk Card 1 -->
+                    <div class="bg-slate-900/90 border border-indigo-500/40 rounded-xl p-3.5 space-y-2 relative shadow-md">
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="font-mono text-indigo-400 bg-indigo-950 px-2 py-0.5 rounded border border-indigo-800">Chunk #1</span>
+                            <span class="text-emerald-400 font-mono font-medium">Similarity: 0.912</span>
+                        </div>
+                        <div class="text-xs text-slate-300 font-sans leading-relaxed line-clamp-4 bg-slate-950/50 p-2.5 rounded border border-slate-800/80">
+                            "Thiết bị gặp sự cố phần cứng nằm trong thời hạn 12 tháng kể từ ngày kích hoạt sẽ được đổi mới 1-đổi-1 trong vòng 3 ngày làm việc kể từ khi Trung tâm Dịch vụ nhận được sản phẩm."
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                            <span class="flex items-center gap-1 truncate max-w-[180px]" title="Quy_trinh_Bao_hanh_2026.pdf">
+                                <i data-lucide="file-text" class="w-3.5 h-3.5 text-slate-500"></i> Quy_trinh_Bao_hanh_2026.pdf
+                            </span>
+                            <span>Trang 4</span>
+                        </div>
+                    </div>
+
+                    <!-- Chunk Card 2 -->
+                    <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-3.5 space-y-2 hover:border-slate-700 transition">
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">Chunk #2</span>
+                            <span class="text-emerald-400 font-mono font-medium">Similarity: 0.864</span>
+                        </div>
+                        <div class="text-xs text-slate-300 font-sans leading-relaxed line-clamp-4 bg-slate-950/50 p-2.5 rounded border border-slate-800/80">
+                            "Đối với trường hợp thiết bị đã qua thời hạn đổi mới 1-đổi-1 nhưng còn hạn bảo hành, thời gian tiếp nhận sửa chữa phần cứng tối đa là 7 ngày làm việc không tính thứ 7 và chủ nhật."
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                            <span class="flex items-center gap-1 truncate max-w-[180px]">
+                                <i data-lucide="file-text" class="w-3.5 h-3.5 text-slate-500"></i> Quy_trinh_Bao_hanh_2026.pdf
+                            </span>
+                            <span>Trang 5</span>
+                        </div>
+                    </div>
+
+                    <!-- Chunk Card 3 -->
+                    <div class="bg-slate-900/50 border border-slate-800 rounded-xl p-3.5 space-y-2 opacity-60">
+                        <div class="flex items-center justify-between text-xs">
+                            <span class="font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">Chunk #3</span>
+                            <span class="text-amber-400 font-mono font-medium">Similarity: 0.651</span>
+                        </div>
+                        <div class="text-xs text-slate-400 font-sans leading-relaxed line-clamp-3 bg-slate-950/50 p-2.5 rounded border border-slate-800/80">
+                            "Bảng giá linh kiện thay thế dành cho dịch vụ sửa chữa ngoài bảo hành năm 2026 áp dụng cho dòng sản phẩm Enterprise..."
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+                            <span>Bang_gia_linh_kien.xlsx</span>
+                            <span>Trang 1</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Query Inspector Footer -->
+                <div class="p-4 border-t border-darkborder bg-slate-950 text-xs space-y-2">
+                    <div class="font-semibold text-slate-300 flex items-center justify-between">
+                        <span>Query Rewritten (HyDE):</span>
+                        <span class="text-indigo-400 font-mono text-[10px]">Active</span>
+                    </div>
+                    <p class="text-slate-400 text-[11px] italic bg-slate-900 p-2 rounded border border-slate-800">
+                        "Hardware warranty policy terms and replacement procedure duration limits"
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- VIEW 2: KNOWLEDGE BASE / DATA INGESTION -->
+        <div x-show="activeTab === 'documents'" class="flex-1 p-6 overflow-y-auto space-y-6">
+            <!-- Header Actions -->
+            <div class="flex items-center justify-between">
+                <div>
+                    <h3 class="text-lg font-bold text-slate-100">Kho Tri Thức Doanh Nghiệp</h3>
+                    <p class="text-xs text-slate-400">Quản lý tài liệu nguồn, đồng bộ dữ liệu và quy trình Chunking / Embedding</p>
+                </div>
+                <div class="flex gap-3">
+                    <button class="bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 border border-slate-700">
+                        <i data-lucide="link" class="w-4 h-4"></i> Kết nối Web Crawler
+                    </button>
+                    <button class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 shadow-lg shadow-indigo-600/20">
+                        <i data-lucide="upload" class="w-4 h-4"></i> Tải lên Tài liệu
+                    </button>
+                </div>
+            </div>
+
+            <!-- Upload Drop Area -->
+            <div class="border-2 border-dashed border-slate-800 hover:border-indigo-500/50 rounded-2xl p-8 text-center bg-darkcard/40 transition cursor-pointer group">
+                <div class="w-12 h-12 bg-indigo-600/10 text-indigo-400 rounded-xl flex items-center justify-center mx-auto mb-3 group-hover:scale-110 transition">
+                    <i data-lucide="file-up" class="w-6 h-6"></i>
+                </div>
+                <p class="text-sm font-medium text-slate-200">Kéo thả tài liệu PDF, DOCX, TXT hoặc CSV vào đây</p>
+                <p class="text-xs text-slate-500 mt-1">Hỗ trợ kích thước tối đa 50MB/file. Tự động parse OCR và tách đoạn văn bản.</p>
+            </div>
+
+            <!-- Documents Table -->
+            <div class="bg-darkcard border border-darkborder rounded-xl overflow-hidden">
+                <div class="p-4 border-b border-darkborder flex items-center justify-between">
+                    <input type="text" placeholder="Tìm kiếm tài liệu..." class="bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 w-64 focus:outline-none focus:border-indigo-500">
+                    <div class="flex items-center gap-2 text-xs text-slate-400">
+                        <span>Đã chọn 12 tài liệu</span>
+                    </div>
+                </div>
+
+                <table class="w-full text-left text-xs text-slate-300">
+                    <thead class="bg-slate-900/80 text-slate-400 font-mono uppercase text-[10px] tracking-wider border-b border-slate-800">
+                        <tr>
+                            <th class="p-4">Tên Tài Liệu</th>
+                            <th class="p-4">Kích Thước</th>
+                            <th class="p-4">Số Chunks</th>
+                            <th class="p-4">Trạng Thái Vector</th>
+                            <th class="p-4">Embedding Model</th>
+                            <th class="p-4">Ngày Tải Lên</th>
+                            <th class="p-4 text-right">Thao Tác</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-800/60 font-sans">
+                        <tr class="hover:bg-slate-800/30">
+                            <td class="p-4 flex items-center gap-2.5 font-medium text-slate-200">
+                                <i data-lucide="file-text" class="w-4 h-4 text-red-400"></i>
+                                Quy_trinh_Bao_hanh_2026.pdf
+                            </td>
+                            <td class="p-4 text-slate-400">2.4 MB</td>
+                            <td class="p-4 font-mono">142 Chunks</td>
+                            <td class="p-4">
+                                <span class="bg-emerald-950 text-emerald-400 border border-emerald-800 px-2 py-0.5 rounded-full text-[10px] font-medium flex items-center gap-1 w-max">
+                                    <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full"></span> Ready / Indexed
+                                </span>
+                            </td>
+                            <td class="p-4 font-mono text-slate-400">text-embed-3-large</td>
+                            <td class="p-4 text-slate-400">20/10/2026</td>
+                            <td class="p-4 text-right space-x-2">
+                                <button class="text-indigo-400 hover:text-indigo-300">Xem Chunks</button>
+                                <button class="text-red-400 hover:text-red-300">Xóa</button>
+                            </td>
+                        </tr>
+                        <tr class="hover:bg-slate-800/30">
+                            <td class="p-4 flex items-center gap-2.5 font-medium text-slate-200">
+                                <i data-lucide="file-text" class="w-4 h-4 text-blue-400"></i>
+                                HDSD_He_Thong_Internal_v3.docx
+                            </td>
+                            <td class="p-4 text-slate-400">5.1 MB</td>
+                            <td class="p-4 font-mono">380 Chunks</td>
+                            <td class="p-4">
+                                <span class="bg-emerald-950 text-emerald-400 border border-emerald-800 px-2 py-0.5 rounded-full text-[10px] font-medium flex items-center gap-1 w-max">
+                                    <span class="w-1.5 h-1.5 bg-emerald-400 rounded-full"></span> Ready / Indexed
+                                </span>
+                            </td>
+                            <td class="p-4 font-mono text-slate-400">text-embed-3-large</td>
+                            <td class="p-4 text-slate-400">18/10/2026</td>
+                            <td class="p-4 text-right space-x-2">
+                                <button class="text-indigo-400 hover:text-indigo-300">Xem Chunks</button>
+                                <button class="text-red-400 hover:text-red-300">Xóa</button>
+                            </td>
+                        </tr>
+                        <tr class="hover:bg-slate-800/30">
+                            <td class="p-4 flex items-center gap-2.5 font-medium text-slate-200">
+                                <i data-lucide="globe" class="w-4 h-4 text-amber-400"></i>
+                                https://docs.company.com/api-v2
+                            </td>
+                            <td class="p-4 text-slate-400">URL Scrape</td>
+                            <td class="p-4 font-mono">89 Chunks</td>
+                            <td class="p-4">
+                                <span class="bg-indigo-950 text-indigo-400 border border-indigo-800 px-2 py-0.5 rounded-full text-[10px] font-medium flex items-center gap-1 w-max">
+                                    <i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i> Vectorizing...
+                                </span>
+                            </td>
+                            <td class="p-4 font-mono text-slate-400">text-embed-3-large</td>
+                            <td class="p-4 text-slate-400">Vừa xong</td>
+                            <td class="p-4 text-right space-x-2">
+                                <button class="text-slate-500 cursor-not-allowed">Xem Chunks</button>
+                                <button class="text-red-400 hover:text-red-300">Hủy</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- VIEW 3: CONFIGURATION PIPELINE -->
+        <div x-show="activeTab === 'config'" class="flex-1 p-6 overflow-y-auto space-y-6">
+            <div class="max-w-4xl space-y-6">
+                <div>
+                    <h3 class="text-lg font-bold text-slate-100">Cấu hình RAG & Retrieval Engine</h3>
+                    <p class="text-xs text-slate-400">Điều chỉnh chiến lược Chunking, mô hình Embeddings và thuật toán tìm kiếm tối ưu cho domain dữ liệu.</p>
+                </div>
+
+                <!-- Chunking Settings Card -->
+                <div class="bg-darkcard border border-darkborder rounded-xl p-5 space-y-4">
+                    <h4 class="text-sm font-semibold text-slate-200 border-b border-slate-800 pb-2 flex items-center gap-2">
+                        <i data-lucide="scissors" class="w-4 h-4 text-indigo-400"></i> Chunking Strategy (Phân đoạn văn bản)
+                    </h4>
+
+                    <div class="grid grid-cols-2 gap-6">
+                        <div class="space-y-1.5">
+                            <label class="text-xs text-slate-300 font-medium">Phương pháp chia đoạn (Splitter)</label>
+                            <select class="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                                <option>Recursive Character Text Splitter (Khuyên dùng)</option>
+                                <option>Semantic Chunking (Dựa trên nghĩa văn bản)</option>
+                                <option>Markdown / HTML Structure Aware</option>
+                                <option>Fixed Token Length Splitter</option>
+                            </select>
+                        </div>
+
+                        <div class="space-y-1.5">
+                            <label class="text-xs text-slate-300 font-medium">Chunk Size (Tokens): <span class="text-indigo-400 font-mono">512 tokens</span></label>
+                            <input type="range" min="128" max="2048" value="512" class="w-full accent-indigo-500">
+                            <div class="flex justify-between text-[10px] text-slate-500">
+                                <span>128 (Nhanh)</span>
+                                <span>512 (Chuẩn)</span>
+                                <span>2048 (Ngữ cảnh rộng)</span>
+                            </div>
+                        </div>
+
+                        <div class="space-y-1.5">
+                            <label class="text-xs text-slate-300 font-medium">Chunk Overlap (Độ gối đầu): <span class="text-indigo-400 font-mono">64 tokens</span></label>
+                            <input type="range" min="0" max="256" value="64" class="w-full accent-indigo-500">
+                        </div>
+
+                        <div class="space-y-1.5">
+                            <label class="text-xs text-slate-300 font-medium">Embedding Model Target</label>
+                            <select class="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                                <option>OpenAI text-embedding-3-large (1536 dim)</option>
+                                <option>Cohere Embed v3 - Multilingual</option>
+                                <option>BGE-M3 (Dense + Sparse + Multi-Vector)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Retrieval & Search Parameters Card -->
+                <div class="bg-darkcard border border-darkborder rounded-xl p-5 space-y-4">
+                    <h4 class="text-sm font-semibold text-slate-200 border-b border-slate-800 pb-2 flex items-center gap-2">
+                        <i data-lucide="search" class="w-4 h-4 text-indigo-400"></i> Retrieval & Search Strategy
+                    </h4>
+
+                    <div class="grid grid-cols-2 gap-6">
+                        <div class="space-y-1.5">
+                            <label class="text-xs text-slate-300 font-medium">Chế độ Truy vấn (Search Mode)</label>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button @click="ragMode = 'vector'" :class="ragMode === 'vector' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-400'" class="p-2 border rounded-lg text-xs font-medium text-center">Dense Vector</button>
+                                <button @click="ragMode = 'bm25'" :class="ragMode === 'bm25' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-400'" class="p-2 border rounded-lg text-xs font-medium text-center">Keyword (BM25)</button>
+                                <button @click="ragMode = 'hybrid'" :class="ragMode === 'hybrid' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-400'" class="p-2 border rounded-lg text-xs font-medium text-center">Hybrid Search</button>
+                            </div>
+                        </div>
+
+                        <div class="space-y-1.5">
+                            <label class="text-xs text-slate-300 font-medium">Top-K Contexts (Số lượng Chunk trả về)</label>
+                            <input type="number" x-model="topK" class="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
+                        </div>
+                    </div>
+
+                    <div class="pt-2 space-y-3">
+                        <div class="flex items-center justify-between p-3 bg-slate-900/60 rounded-lg border border-slate-800">
+                            <div>
+                                <p class="text-xs font-medium text-slate-200">Re-ranking Model (Cohere Rerank v3)</p>
+                                <p class="text-[11px] text-slate-400">Sắp xếp lại thứ tự ưu tiên của Chunks dựa trên mô hình Re-rank chuyên dụng giúp tăng 35% độ chính xác.</p>
+                            </div>
+                            <input type="checkbox" x-model="rerank" class="w-4 h-4 text-indigo-600 rounded bg-slate-800 border-slate-700">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Save Changes Button -->
+                <div class="flex justify-end gap-3">
+                    <button class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-5 py-2.5 rounded-lg text-xs font-medium">Đặt lại mặc định</button>
+                    <button class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-lg text-xs font-medium shadow-lg shadow-indigo-600/20">Lưu Cấu Hình Pipeline</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- VIEW 4: METRICS & SYSTEM MONITORING -->
+        <div x-show="activeTab === 'metrics'" class="flex-1 p-6 overflow-y-auto space-y-6">
+            <div>
+                <h3 class="text-lg font-bold text-slate-100">Đánh giá Hiệu năng RAG Engine</h3>
+                <p class="text-xs text-slate-400">Giám sát độ trễ, độ tin cậy của câu trả lời (Faithfulness) và Relevance score</p>
+            </div>
+
+            <!-- KPI Cards Grid -->
+            <div class="grid grid-cols-4 gap-4">
+                <div class="bg-darkcard border border-darkborder p-4 rounded-xl space-y-1">
+                    <span class="text-xs text-slate-400">Faithfulness Score</span>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-2xl font-bold text-emerald-400 font-mono">98.4%</span>
+                        <span class="text-[10px] text-emerald-500">↑ +1.2%</span>
+                    </div>
+                    <p class="text-[10px] text-slate-500">Tỷ lệ trả lời không ảo giác (Hallucination-free)</p>
+                </div>
+
+                <div class="bg-darkcard border border-darkborder p-4 rounded-xl space-y-1">
+                    <span class="text-xs text-slate-400">Context Precision</span>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-2xl font-bold text-indigo-400 font-mono">91.2%</span>
+                        <span class="text-[10px] text-indigo-500">↑ +2.5%</span>
+                    </div>
+                    <p class="text-[10px] text-slate-500">Độ chính xác của các đoạn Chunk được trích xuất</p>
+                </div>
+
+                <div class="bg-darkcard border border-darkborder p-4 rounded-xl space-y-1">
+                    <span class="text-xs text-slate-400">Avg Retrieval Latency</span>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-2xl font-bold text-slate-200 font-mono">48ms</span>
+                        <span class="text-[10px] text-emerald-500">↓ -5ms</span>
+                    </div>
+                    <p class="text-[10px] text-slate-500">Thời gian truy vấn Vector DB Qdrant</p>
+                </div>
+
+                <div class="bg-darkcard border border-darkborder p-4 rounded-xl space-y-1">
+                    <span class="text-xs text-slate-400">Cost per Query</span>
+                    <div class="flex items-baseline gap-2">
+                        <span class="text-2xl font-bold text-amber-400 font-mono">$0.0024</span>
+                    </div>
+                    <p class="text-[10px] text-slate-500">Embedding + LLM Token consumption</p>
+                </div>
+            </div>
+
+            <!-- Latency Breakdown Chart Representation -->
+            <div class="bg-darkcard border border-darkborder rounded-xl p-5 space-y-4">
+                <h4 class="text-sm font-semibold text-slate-200">Phân bổ Thời gian Xử lý Trả lời (Total Latency Breakdown)</h4>
+                
+                <div class="space-y-3 font-mono text-xs">
+                    <div>
+                        <div class="flex justify-between text-slate-400 mb-1">
+                            <span>1. Query Expansion & Rewriting (HyDE)</span>
+                            <span>120ms (14%)</span>
+                        </div>
+                        <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden">
+                            <div class="bg-purple-500 h-2 rounded-full" style="width: 14%"></div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between text-slate-400 mb-1">
+                            <span>2. Vector DB Search (Dense + BM25)</span>
+                            <span>42ms (5%)</span>
+                        </div>
+                        <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden">
+                            <div class="bg-blue-500 h-2 rounded-full" style="width: 5%"></div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between text-slate-400 mb-1">
+                            <span>3. Cohere Reranking</span>
+                            <span>85ms (10%)</span>
+                        </div>
+                        <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden">
+                            <div class="bg-amber-500 h-2 rounded-full" style="width: 10%"></div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex justify-between text-slate-400 mb-1">
+                            <span>4. LLM Generation (GPT-4o) Time to First Token</span>
+                            <span>593ms (71%)</span>
+                        </div>
+                        <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden">
+                            <div class="bg-emerald-500 h-2 rounded-full" style="width: 71%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Lucide icons initialization script -->
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>
