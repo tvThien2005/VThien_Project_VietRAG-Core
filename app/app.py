@@ -80,7 +80,7 @@ ensure_theme()
 for _k, _v in {"sb_open": True, "token": None, "user": None, "tab": "chat", "drawer_open": True, "sel_msg": None,
                "messages": [], "session_id": None, "fb": {}, "dz_nonce": 0, "scroll": False,
                "cfg": dict(api.DEFAULT_CONFIG), "chat_task": None, "auth_task": None,
-               "auth_notice": None}.items():
+               "auth_notice": None, "document_count": 0}.items():
     ss.setdefault(_k, _v)
 
 if "use_hybrid" not in ss.cfg:
@@ -143,7 +143,7 @@ def send_fb(mid, rating):
     try:
         api.send_feedback(ss.token, message_id=mid, rating=rating)
         ss.fb[mid] = rating
-        st.toast("Cảm ơn phản hồi của bạn!", icon="🙏")
+        st.toast("Cảm ơn phản hồi của bạn!", icon="✅")
     except APIError as e:
         st.toast(str(e), icon="⚠️")
 
@@ -154,7 +154,7 @@ def logout():
         task["future"].cancel()
     for k in ("token", "user", "session_id", "sel_msg"):
         ss[k] = None
-    ss.messages, ss.fb, ss.tab, ss.chat_task = [], {}, "chat", None
+    ss.messages, ss.fb, ss.tab, ss.chat_task, ss.document_count = [], {}, "chat", None, 0
 
 
 def set_mode(m):
@@ -196,6 +196,10 @@ def ingest(files) -> int:
                 ok += 1
             except APIError as e:
                 st.toast(f"{f.name}: {e}", icon="⚠️")
+    if ok:
+        # Danh sách có thể đang được cache trong tab Kho tri thức.
+        # Xóa cache sau khi queue job để lần render kế tiếp thấy trạng thái mới.
+        cached_documents.clear()
     return ok
 
 
@@ -497,9 +501,10 @@ def page_chat():
 # Tab 2: Kho tri thức
 # =========================================================================== #
 @st.fragment(run_every=3)
-def page_docs(docs):
+def page_docs():
     try:
-        docs = api.list_documents(ss.token)
+        docs = cached_documents(ss.token)
+        ss.document_count = len(docs)
     except APIError as e:
         st.error(str(e))
         return
@@ -561,6 +566,7 @@ def doc_row(d):
                 if st.button("Hủy" if d["status"] == "processing" else "Xóa", key=f"dng_del_{k}"):
                     try:
                         api.delete_document(ss.token, k)
+                        cached_documents.clear()
                         st.rerun()
                     except APIError as e:
                         st.toast(str(e), icon="⚠️")
@@ -656,7 +662,13 @@ def page_metrics():
         st.markdown(ui.latency_html(data["latency"]), unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=2, show_spinner=False)
+def cached_documents(token: str) -> list[dict]:
+    """Poll documents only while the documents fragment is visible."""
+    return api.list_documents(token)
+
+
+@st.cache_data(ttl=90, show_spinner=False)
 def cached_status(token: str) -> dict:
     return api.get_status(token)
 
@@ -666,18 +678,18 @@ def cached_status(token: str) -> dict:
 # =========================================================================== #
 def main():
     authed = bool(ss.token)
-    docs, status = [], {"vector_db": "-", "total_vectors": 0, "embedding_model": "-",
-                        "collection": "-", "version": "v2.4"}
+    status = {"vector_db": "-", "total_vectors": 0, "embedding_model": "-",
+              "collection": "-", "version": "v2.4"}
     if authed:
         try:
-            docs = api.list_documents(ss.token)
             status = cached_status(ss.token)
         except APIError as e:
             st.toast(str(e), icon="⚠️")
 
     up = [i for i, m in enumerate(ss.messages) if ss.fb.get(m.get("message_id")) == "up"]
     down = [i for i, m in enumerate(ss.messages) if ss.fb.get(m.get("message_id")) == "down"]
-    st.markdown(ui.dynamic_css(authed, ss.sb_open, ss.tab, ss.cfg["search_mode"], ss.drawer_open, len(docs),
+    st.markdown(ui.dynamic_css(authed, ss.sb_open, ss.tab, ss.cfg["search_mode"], ss.drawer_open,
+                               ss.document_count,
                                up, down), unsafe_allow_html=True)
 
     if not authed:
@@ -694,7 +706,7 @@ def main():
     if ss.tab == "chat":
         page_chat()
     elif ss.tab == "documents":
-        page_docs(docs)
+        page_docs()
     elif ss.tab == "config":
         page_config()
     else:

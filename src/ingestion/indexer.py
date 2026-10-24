@@ -376,6 +376,214 @@ class QdrantIndexer:
         )
         return len(point_ids)
 
+    def _document_points(self, collection_name: str, doc_id: str) -> List[Any]:
+        """Return every point belonging to one document without loading vectors."""
+        points: List[Any] = []
+        offset = None
+        query_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="doc_id",
+                    match=models.MatchValue(value=doc_id),
+                )
+            ]
+        )
+        while True:
+            batch, offset = self.client.scroll(
+                collection_name=collection_name,
+                scroll_filter=query_filter,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points.extend(batch)
+            if offset is None:
+                return points
+
+    def _validate_append_schema(
+        self,
+        collection_name: str,
+        embedder: ChunkEmbedder,
+        chunk_version: str,
+        tokenizer: str,
+        token_limit: int,
+    ) -> None:
+        """Refuse an append when the existing versioned index is incompatible."""
+        collections = {item.name for item in self.client.get_collections().collections}
+        if collection_name not in collections:
+            raise ValueError(
+                f"Collection '{collection_name}' does not exist; append never creates a collection."
+            )
+
+        info = self.client.get_collection(collection_name=collection_name)
+        vectors = info.config.params.vectors
+        if not isinstance(vectors, dict) or set(vectors) != {"dense"}:
+            raise ValueError(
+                f"Collection '{collection_name}' is not a versioned named-dense collection."
+            )
+        if vectors["dense"].size != embedder.dimension:
+            raise ValueError(
+                f"Collection '{collection_name}' has dimension {vectors['dense'].size}, "
+                f"but the configured embedder returns {embedder.dimension}."
+            )
+
+        sparse_vectors = getattr(info.config.params, "sparse_vectors", None) or {}
+        if self.bm25_vector_name not in sparse_vectors:
+            raise ValueError(
+                f"Collection '{collection_name}' is missing sparse vector '{self.bm25_vector_name}'."
+            )
+
+        sample, _ = self.client.scroll(
+            collection_name=collection_name,
+            limit=1,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not sample:
+            return
+        payload = sample[0].payload or {}
+        expected = {
+            "embedding_model": embedder.model_name,
+            "embedding_dimension": embedder.dimension,
+            "chunking_version": chunk_version,
+            "tokenizer": tokenizer,
+            "token_limit": token_limit,
+            "index_collection": collection_name,
+        }
+        for field, value in expected.items():
+            if field not in payload:
+                raise ValueError(
+                    f"Collection '{collection_name}' lacks version metadata '{field}'; refusing unsafe append."
+                )
+            if payload[field] != value:
+                raise ValueError(
+                    f"Collection '{collection_name}' has incompatible {field}: "
+                    f"{payload[field]!r} != {value!r}."
+                )
+
+    def append_chunks_versioned(
+        self,
+        chunks: List[Chunk],
+        embedder: Optional[ChunkEmbedder] = None,
+        batch_size: int = 64,
+        collection_name: Optional[str] = None,
+        replace_document: bool = False,
+    ) -> int:
+        """Append one document to an existing versioned collection safely.
+
+        Existing collections are never recreated.  A duplicate ``doc_id`` is
+        rejected by default.  With ``replace_document=True``, new points are
+        upserted and verified before stale points of that exact document are
+        removed; unrelated Qdrant points are never touched.
+        """
+        if not chunks:
+            raise ValueError("No chunks to append.")
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive.")
+        if not self.is_connected():
+            raise ConnectionError(
+                f"Cannot connect to Qdrant at http://{self.host}:{self.port}."
+            )
+
+        document_ids = {chunk.doc_id for chunk in chunks}
+        if len(document_ids) != 1 or not next(iter(document_ids)):
+            raise ValueError("Append requires chunks from exactly one non-empty doc_id.")
+        doc_id = next(iter(document_ids))
+        embedder = embedder or BGEEmbedder()
+        target_collection = collection_name or self.collection_name
+        chunk_version, tokenizer, token_limit = self._validate_chunk_version(chunks)
+        self._validate_append_schema(
+            target_collection,
+            embedder,
+            chunk_version,
+            tokenizer,
+            token_limit,
+        )
+
+        existing_points = self._document_points(target_collection, doc_id)
+        if existing_points and not replace_document:
+            raise FileExistsError(
+                f"Document '{doc_id}' already has {len(existing_points)} points in '{target_collection}'."
+            )
+
+        point_ids: List[str] = []
+        for chunk in chunks:
+            try:
+                point_ids.append(str(uuid.UUID(chunk.chunk_id)))
+            except (ValueError, AttributeError) as exc:
+                raise ValueError(
+                    f"Versioned append requires UUID chunk IDs; got {chunk.chunk_id!r}."
+                ) from exc
+        if len(set(point_ids)) != len(point_ids):
+            raise ValueError("Chunk IDs must be unique for an append.")
+
+        embeddings = embedder.embed_chunks(chunks, show_progress_bar=False)
+        if len(embeddings) != len(chunks) or any(
+            len(vector) != embedder.dimension for vector in embeddings
+        ):
+            raise ValueError("Embedding output does not match the configured vector dimension.")
+
+        for start in range(0, len(chunks), batch_size):
+            points: List[models.PointStruct] = []
+            for chunk, vector, point_id in zip(
+                chunks[start : start + batch_size],
+                embeddings[start : start + batch_size],
+                point_ids[start : start + batch_size],
+            ):
+                source_table = chunk.metadata.get("source_table") or {}
+                payload = {
+                    **chunk.metadata,
+                    "text": chunk.text,
+                    "doc_id": doc_id,
+                    "chunk_id": chunk.chunk_id,
+                    "chunk_index": chunk.chunk_index,
+                    "file_name": chunk.metadata.get("file_name", ""),
+                    "chunking_version": chunk_version,
+                    "embedding_model": embedder.model_name,
+                    "embedding_dimension": embedder.dimension,
+                    "embedding_normalized": getattr(embedder, "normalize_embeddings", None),
+                    "sparse_model": self.bm25_model,
+                    "index_collection": target_collection,
+                    "table_id": chunk.metadata.get("table_id") or source_table.get("table_id"),
+                }
+                points.append(
+                    models.PointStruct(
+                        id=point_id,
+                        vector={
+                            "dense": vector,
+                            self.bm25_vector_name: models.Document(
+                                text=chunk.text,
+                                model=self.bm25_model,
+                            ),
+                        },
+                        payload=payload,
+                    )
+                )
+            self.client.upsert(collection_name=target_collection, points=points, wait=True)
+
+        indexed_points = self._document_points(target_collection, doc_id)
+        indexed_ids = {str(point.id) for point in indexed_points}
+        expected_ids = set(point_ids)
+        if not expected_ids.issubset(indexed_ids):
+            raise RuntimeError("Qdrant verification failed after append; new points are missing.")
+
+        stale_ids = {str(point.id) for point in existing_points} - expected_ids
+        if stale_ids:
+            self.client.delete(
+                collection_name=target_collection,
+                points_selector=models.PointIdsList(points=list(stale_ids)),
+                wait=True,
+            )
+        final_points = self._document_points(target_collection, doc_id)
+        if {str(point.id) for point in final_points} != expected_ids:
+            raise RuntimeError("Qdrant verification failed after document replacement.")
+        logger.info(
+            "Appended %s chunks for doc_id=%s into '%s'.",
+            len(chunks), doc_id, target_collection,
+        )
+        return len(chunks)
+
     def _verify_versioned_collection(
         self,
         collection_name: str,

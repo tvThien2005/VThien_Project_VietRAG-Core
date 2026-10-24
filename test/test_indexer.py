@@ -47,7 +47,16 @@ class FakeQdrantClient:
         return True
 
     def upsert(self, collection_name, points, wait=True):
-        self.collections[collection_name]["points"].extend(points)
+        existing = {str(point.id): point for point in self.collections[collection_name]["points"]}
+        existing.update({str(point.id): point for point in points})
+        self.collections[collection_name]["points"] = list(existing.values())
+
+    def delete(self, collection_name, points_selector, wait=True):
+        removed = {str(point_id) for point_id in points_selector.points}
+        self.collections[collection_name]["points"] = [
+            point for point in self.collections[collection_name]["points"]
+            if str(point.id) not in removed
+        ]
 
     def get_collection(self, collection_name):
         collection = self.collections[collection_name]
@@ -65,6 +74,11 @@ class FakeQdrantClient:
 
     def scroll(self, collection_name, offset=None, limit=256, **kwargs):
         points = self.collections[collection_name]["points"]
+        scroll_filter = kwargs.get("scroll_filter")
+        if scroll_filter and scroll_filter.must:
+            condition = scroll_filter.must[0]
+            value = condition.match.value
+            points = [point for point in points if (point.payload or {}).get(condition.key) == value]
         start = offset or 0
         page = points[start : start + limit]
         next_offset = start + len(page) if start + len(page) < len(points) else None
@@ -165,6 +179,40 @@ class TestVersionedQdrantIndex(unittest.TestCase):
             )
 
         self.assertEqual(self.indexer.client.created, [])
+
+    def test_appends_to_existing_versioned_collection_without_changing_other_documents(self):
+        existing = make_chunk("old document", "doc-old")
+        self.indexer.index_chunks_versioned(
+            [existing],
+            embedder=FakeEmbedder(),
+            collection_name="active-versioned",
+        )
+        incoming = make_chunk("new document", "doc-new")
+
+        count = self.indexer.append_chunks_versioned(
+            [incoming],
+            embedder=FakeEmbedder(),
+            collection_name="active-versioned",
+        )
+
+        self.assertEqual(count, 1)
+        points = self.indexer.client.collections["active-versioned"]["points"]
+        self.assertEqual({point.payload["doc_id"] for point in points}, {"doc-old", "doc-new"})
+
+    def test_rejects_duplicate_document_by_default(self):
+        existing = make_chunk("original", "doc-duplicate")
+        self.indexer.index_chunks_versioned(
+            [existing],
+            embedder=FakeEmbedder(),
+            collection_name="active-versioned",
+        )
+
+        with self.assertRaises(FileExistsError):
+            self.indexer.append_chunks_versioned(
+                [make_chunk("replacement", "doc-duplicate")],
+                embedder=FakeEmbedder(),
+                collection_name="active-versioned",
+            )
 
 
 if __name__ == "__main__":

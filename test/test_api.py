@@ -1,21 +1,25 @@
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import api_client
+from api.main import app
 from api.routes import ChatRequest, chat, system_status
+from src.ingestion.document_registry import DocumentRegistry
 
 
 class TestSystemStatus(TestCase):
     @patch("api.routes.QdrantClient")
     @patch("api.routes.get_config")
-    def test_status_uses_exact_count_and_indexed_embedding_model(self, get_config, qdrant_client):
+    def test_status_uses_approximate_count_and_indexed_embedding_model(self, get_config, qdrant_client):
         config = SimpleNamespace(
             vector_store=SimpleNamespace(
                 host="localhost",
@@ -38,7 +42,7 @@ class TestSystemStatus(TestCase):
 
         client.count.assert_called_once_with(
             collection_name="demo_collection",
-            exact=True,
+            exact=False,
         )
         self.assertEqual(result["total_vectors"], 724)
         self.assertEqual(result["embedding_model"], "indexed-model")
@@ -69,6 +73,16 @@ class TestChatConfig(TestCase):
         self.assertEqual(payload["search_mode"], "hybrid")
         self.assertTrue(payload["rerank"])
         self.assertFalse(payload["hyde"])
+
+    @patch("app.api_client._request")
+    @patch("app.api_client.DOCUMENTS_API_MODE", True)
+    def test_upload_uses_real_documents_api_when_enabled(self, request):
+        request.return_value = {"job_id": "job-1", "status": "queued"}
+
+        api_client.upload_document("token", "policy.pdf", b"pdf", "application/pdf")
+
+        self.assertEqual(request.call_args.args[:2], ("POST", "/documents"))
+        self.assertEqual(request.call_args.kwargs["data"]["duplicate_policy"], "reject")
 
 
 class TestChatRoute(TestCase):
@@ -147,3 +161,29 @@ class TestChatRoute(TestCase):
             chat(ChatRequest(question="Câu hỏi", search_mode="bm25"))
 
         self.assertEqual(error.exception.status_code, 422)
+
+
+class TestDocumentsRoute(TestCase):
+    def test_upload_queues_background_job_and_lists_registry_document(self):
+        config = SimpleNamespace(data=SimpleNamespace(supported_extensions=[".pdf", ".docx", ".txt"]))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry = DocumentRegistry(Path(temp_dir) / "registry.sqlite3")
+            with patch("api.routes.PROJECT_ROOT", Path(temp_dir)), \
+                 patch("api.routes.get_config", return_value=config), \
+                 patch("api.routes.get_document_registry", return_value=registry), \
+                 patch("api.routes.process_document_job") as worker:
+                client = TestClient(app)
+                response = client.post(
+                    "/documents",
+                    files={"file": ("policy.pdf", b"%PDF-demo", "application/pdf")},
+                )
+                self.assertEqual(response.status_code, 202)
+                document = response.json()
+                self.assertEqual(document["name"], "policy.pdf")
+                self.assertEqual(document["status"], "queued")
+                self.assertTrue(document["job_id"])
+                worker.assert_called_once()
+
+                listed = client.get("/documents")
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(listed.json()[0]["id"], document["id"])

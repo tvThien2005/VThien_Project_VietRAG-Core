@@ -60,6 +60,9 @@ import yaml
 API_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
 MOCK_MODE = os.getenv("RAG_MOCK", "1") == "1"
 CHAT_API_MODE = os.getenv("RAG_CHAT_API", "0") == "1"
+# Khi đang chạy chat thật, mặc định dùng luôn API documents thật. Có thể bật
+# riêng bằng RAG_DOCUMENTS_API=1 trong giai đoạn chuyển đổi.
+DOCUMENTS_API_MODE = os.getenv("RAG_DOCUMENTS_API", os.getenv("RAG_CHAT_API", "0")) == "1"
 TIMEOUT = 120
 
 SPLITTERS = [
@@ -226,7 +229,7 @@ def get_status(token: str) -> dict:
 #  DOCUMENTS
 # =========================================================================== #
 def list_documents(token: str) -> list[dict]:
-    if MOCK_MODE:
+    if MOCK_MODE and not DOCUMENTS_API_MODE:
         docs = _docs(token)
         for d in docs.values():
             if d["status"] == "processing" and time.time() - d["_t"] > 8:
@@ -236,14 +239,20 @@ def list_documents(token: str) -> list[dict]:
 
 
 def upload_document(token: str, filename: str, data: bytes, mime: str) -> dict:
-    if MOCK_MODE:
+    if MOCK_MODE and not DOCUMENTS_API_MODE:
         doc = {"id": uuid.uuid4().hex[:8], "name": filename, "type": filename.rsplit(".", 1)[-1].lower(),
                "size": len(data), "chunks": max(1, len(data) // 4000), "status": "processing",
                "embedding_model": "text-embed-3-large", "uploaded_at": datetime.now().strftime("%d/%m/%Y"),
                "_t": time.time()}
         _docs(token)[doc["id"]] = doc
         return doc
-    return _request("POST", "/documents", token, files={"file": (filename, data, mime)})
+    return _request(
+        "POST",
+        "/documents",
+        token,
+        files={"file": (filename, data, mime)},
+        data={"duplicate_policy": "reject"},
+    )
 
 
 def crawl_url(token: str, url: str) -> dict:
@@ -257,14 +266,14 @@ def crawl_url(token: str, url: str) -> dict:
 
 
 def delete_document(token: str, doc_id: str) -> dict:
-    if MOCK_MODE:
+    if MOCK_MODE and not DOCUMENTS_API_MODE:
         _docs(token).pop(doc_id, None)
         return {"message": "ok"}
     return _request("DELETE", f"/documents/{doc_id}", token)
 
 
 def get_chunks(token: str, doc_id: str) -> list[dict]:
-    if MOCK_MODE:
+    if MOCK_MODE and not DOCUMENTS_API_MODE:
         _user(token)
         return [{"chunk_id": f"chk_{doc_id}_{i}", "page": i,
                  "text": s["text"]} for i, s in enumerate(_SOURCES[:2], start=1)]

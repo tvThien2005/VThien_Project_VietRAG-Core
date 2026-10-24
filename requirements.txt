@@ -4,5 +4,6 @@ Pillow>=10
 transformers>=4.40
 tiktoken>=0.7
 fastapi>=0.110
+python-multipart>=0.0.9
 uvicorn[standard]>=0.29
 requests>=2.31

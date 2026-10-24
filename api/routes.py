@@ -1,14 +1,42 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
+from qdrant_client.http import models
 
-from src.config import get_config
+from src.config import PROJECT_ROOT, get_config
+from src.ingestion.document_registry import DocumentRegistry
+from src.ingestion.document_service import document_id_for_bytes, process_document_job
+from src.ingestion.indexer import QdrantIndexer
 
 router = APIRouter()
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+@lru_cache(maxsize=1)
+def get_document_registry() -> DocumentRegistry:
+	return DocumentRegistry()
+
+
+def _document_response(record: dict) -> dict:
+	"""Map persistent registry fields to the current Streamlit document contract."""
+	return {
+		"id": record["doc_id"],
+		"job_id": record["job_id"],
+		"name": record["file_name"],
+		"type": record["file_type"],
+		"size": record["size"],
+		"chunks": record["chunk_count"],
+		"status": record["status"],
+		"embedding_model": record.get("embedding_model") or "-",
+		"uploaded_at": record["created_at"],
+		"updated_at": record["updated_at"],
+		"error": record.get("error_message"),
+	}
 
 
 @router.get("/system/status")
@@ -24,7 +52,7 @@ def system_status() -> dict:
 		)
 		total_vectors = client.count(
 			collection_name=cfg.vector_store.collection_name,
-			exact=True,
+			exact=False,
 		).count
 		points, _ = client.scroll(
 			collection_name=cfg.vector_store.collection_name,
@@ -52,6 +80,112 @@ def system_status() -> dict:
 		"collection": cfg.vector_store.collection_name,
 		"version": cfg.app.version,
 	}
+
+
+@router.post("/documents", status_code=status.HTTP_202_ACCEPTED)
+async def upload_document(
+	background_tasks: BackgroundTasks,
+	file: UploadFile = File(...),
+	duplicate_policy: Literal["reject", "replace"] = Form("reject"),
+) -> dict:
+	"""Store an upload and enqueue safe append into the configured collection."""
+	cfg = get_config()
+	filename = Path(file.filename or "upload").name
+	extension = Path(filename).suffix.lower()
+	if extension not in set(cfg.data.supported_extensions):
+		raise HTTPException(status_code=422, detail="Chỉ hỗ trợ PDF, DOCX hoặc TXT.")
+	content = await file.read()
+	if not content:
+		raise HTTPException(status_code=422, detail="File tải lên đang trống.")
+	if len(content) > MAX_UPLOAD_BYTES:
+		raise HTTPException(status_code=413, detail="Kích thước file vượt quá 10 MB.")
+
+	doc_id = document_id_for_bytes(content)
+	upload_dir = PROJECT_ROOT / "data" / "raw" / "uploads"
+	upload_dir.mkdir(parents=True, exist_ok=True)
+	source_path = upload_dir / f"{doc_id}{extension}"
+	source_path.write_bytes(content)
+
+	registry = get_document_registry()
+	try:
+		record = registry.create_job(
+			doc_id=doc_id,
+			job_id=uuid4().hex,
+			file_name=filename,
+			file_type=extension.lstrip("."),
+			size=len(content),
+			source_path=str(source_path),
+			replace_existing=duplicate_policy == "replace",
+		)
+	except FileExistsError as exc:
+		raise HTTPException(status_code=409, detail=str(exc)) from exc
+	except ValueError as exc:
+		raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+	background_tasks.add_task(
+		process_document_job,
+		registry=registry,
+		doc_id=doc_id,
+		source_path=source_path,
+		file_name=filename,
+		replace_existing=duplicate_policy == "replace",
+	)
+	return _document_response(record)
+
+
+@router.get("/documents")
+def list_documents() -> list[dict]:
+	return [_document_response(record) for record in get_document_registry().list_documents()]
+
+
+@router.get("/documents/{doc_id}/chunks")
+def document_chunks(doc_id: str) -> list[dict]:
+	record = get_document_registry().get(doc_id)
+	if not record:
+		raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu.")
+	if record["status"] != "ready":
+		raise HTTPException(status_code=409, detail="Tài liệu chưa sẵn sàng để xem chunks.")
+
+	try:
+		indexer = QdrantIndexer(collection_name=record["collection_name"])
+		points = indexer._document_points(record["collection_name"], doc_id)
+	except Exception as exc:
+		raise HTTPException(status_code=503, detail=f"Không thể đọc chunks từ Qdrant: {exc}") from exc
+
+	def item(point) -> dict:
+		payload = point.payload or {}
+		return {
+			"chunk_id": payload.get("chunk_id") or str(point.id),
+			"text": payload.get("text", ""),
+			"page": payload.get("page_number") or payload.get("page_start"),
+			"chunk_index": payload.get("chunk_index", 0),
+		}
+
+	return [item(point) for point in sorted(points, key=lambda point: (point.payload or {}).get("chunk_index", 0))]
+
+
+@router.delete("/documents/{doc_id}")
+def delete_document(doc_id: str) -> dict:
+	"""Remove only one ready document's Qdrant points; keep source artifacts for audit."""
+	registry = get_document_registry()
+	record = registry.get(doc_id)
+	if not record:
+		raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu.")
+	if record["status"] in {"queued", "processing"}:
+		raise HTTPException(status_code=409, detail="Không thể xóa tài liệu đang được xử lý.")
+	try:
+		indexer = QdrantIndexer(collection_name=record["collection_name"])
+		points = indexer._document_points(record["collection_name"], doc_id)
+		if points:
+			indexer.client.delete(
+				collection_name=record["collection_name"],
+				points_selector=models.PointIdsList(points=[str(point.id) for point in points]),
+				wait=True,
+			)
+		registry.remove(doc_id)
+	except Exception as exc:
+		raise HTTPException(status_code=503, detail=f"Không thể xóa points Qdrant: {exc}") from exc
+	return {"message": "Đã xóa points của tài liệu khỏi collection; file nguồn được giữ lại để audit."}
 
 
 class ChatRequest(BaseModel):
