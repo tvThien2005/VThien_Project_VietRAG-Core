@@ -8,12 +8,11 @@ lets the UI poll progress without scanning the vector collection.
 from __future__ import annotations
 
 import sqlite3
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from src.config import PROJECT_ROOT
+from src.storage.rag_database import RagDatabase
 
 
 def _utc_now() -> str:
@@ -21,67 +20,14 @@ def _utc_now() -> str:
 
 
 class DocumentRegistry:
-    """Small SQLite registry; each operation opens its own connection for job safety."""
+    """Document registry in the shared SQLite database."""
 
     def __init__(self, db_path: Optional[Path | str] = None):
-        self.db_path = Path(db_path or PROJECT_ROOT / "data" / "processed" / "document_registry.sqlite3")
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        self.database = RagDatabase(db_path)
+        self.db_path = self.database.db_path
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        return connection
-
-    @contextmanager
     def _connection(self):
-        connection = self._connect()
-        try:
-            yield connection
-            connection.commit()
-        finally:
-            connection.close()
-
-    def _initialize(self) -> None:
-        with self._connection() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS documents (
-                    doc_id TEXT PRIMARY KEY,
-                    owner_user_id TEXT,
-                    content_sha256 TEXT,
-                    job_id TEXT NOT NULL,
-                    file_name TEXT NOT NULL,
-                    file_type TEXT NOT NULL,
-                    size INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    chunk_count INTEGER NOT NULL DEFAULT 0,
-                    embedding_model TEXT,
-                    collection_name TEXT,
-                    source_path TEXT NOT NULL,
-                    artifact_path TEXT,
-                    error_message TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            # Existing single-user registries remain readable.  Their rows are
-            # deliberately left unowned instead of silently granting them to a
-            # newly registered user.
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(documents)")}
-            if "owner_user_id" not in columns:
-                connection.execute("ALTER TABLE documents ADD COLUMN owner_user_id TEXT")
-            if "content_sha256" not in columns:
-                connection.execute("ALTER TABLE documents ADD COLUMN content_sha256 TEXT")
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_documents_owner_created "
-                "ON documents(owner_user_id, created_at DESC)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_documents_owner_content "
-                "ON documents(owner_user_id, content_sha256)"
-            )
+        return self.database.connection()
 
     @staticmethod
     def _as_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -130,7 +76,7 @@ class DocumentRegistry:
         file_type: str,
         size: int,
         source_path: str,
-        owner_user_id: str = "legacy",
+        owner_user_id: str | None = None,
         content_sha256: str | None = None,
         replace_existing: bool = False,
     ) -> dict[str, Any]:

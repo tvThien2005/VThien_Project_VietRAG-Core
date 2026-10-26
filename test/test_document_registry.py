@@ -2,13 +2,16 @@ import tempfile
 from pathlib import Path
 import unittest
 
+from api.auth import UserStore
 from src.ingestion.document_registry import DocumentRegistry
 
 
 class TestDocumentRegistry(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.registry = DocumentRegistry(Path(self.temp_dir.name) / "registry.sqlite3")
+        self.db_path = Path(self.temp_dir.name) / "rag.sqlite3"
+        self.registry = DocumentRegistry(self.db_path)
+        self.users = UserStore(self.db_path)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -77,9 +80,11 @@ class TestDocumentRegistry(unittest.TestCase):
         self.assertEqual(record["chunk_count"], 0)
 
     def test_owner_scope_keeps_identical_content_in_separate_document_libraries(self):
+        user_a = self.users.register(email="a@example.com", password="123456", full_name="User A")
+        user_b = self.users.register(email="b@example.com", password="123456", full_name="User B")
         self.registry.create_job(
             doc_id="document-user-a",
-            owner_user_id="user-a",
+            owner_user_id=user_a.user_id,
             content_sha256="same-content",
             job_id="job-a",
             file_name="policy.pdf",
@@ -89,7 +94,7 @@ class TestDocumentRegistry(unittest.TestCase):
         )
         self.registry.create_job(
             doc_id="document-user-b",
-            owner_user_id="user-b",
+            owner_user_id=user_b.user_id,
             content_sha256="same-content",
             job_id="job-b",
             file_name="policy.pdf",
@@ -99,14 +104,14 @@ class TestDocumentRegistry(unittest.TestCase):
         )
 
         self.assertEqual(
-            [record["doc_id"] for record in self.registry.list_documents("user-a")],
+            [record["doc_id"] for record in self.registry.list_documents(user_a.user_id)],
             ["document-user-a"],
         )
         self.assertEqual(
-            self.registry.find_by_owner_content("user-b", "same-content")["doc_id"],
+            self.registry.find_by_owner_content(user_b.user_id, "same-content")["doc_id"],
             "document-user-b",
         )
-        self.assertIsNone(self.registry.get_owned("document-user-a", "user-b"))
+        self.assertIsNone(self.registry.get_owned("document-user-a", user_b.user_id))
 
 
 if __name__ == "__main__":

@@ -176,12 +176,14 @@ class TestDocumentsRoute(TestCase):
         config = SimpleNamespace(data=SimpleNamespace(supported_extensions=[".pdf", ".docx", ".txt"]))
         with tempfile.TemporaryDirectory() as temp_dir:
             registry = DocumentRegistry(Path(temp_dir) / "registry.sqlite3")
+            user_store = UserStore(registry.db_path)
+            user = user_store.register(email="upload@example.com", password="123456", full_name="Upload User")
             with patch("api.routes.PROJECT_ROOT", Path(temp_dir)), \
                  patch("api.routes.get_config", return_value=config), \
                  patch("api.routes.get_document_registry", return_value=registry), \
                  patch("api.routes.process_document_job") as worker:
                 client = TestClient(app)
-                app.dependency_overrides[get_current_user] = lambda: TEST_USER
+                app.dependency_overrides[get_current_user] = lambda: user
                 try:
                     response = client.post(
                         "/documents",
@@ -193,7 +195,7 @@ class TestDocumentsRoute(TestCase):
                     self.assertEqual(document["status"], "queued")
                     self.assertTrue(document["job_id"])
                     worker.assert_called_once()
-                    self.assertEqual(worker.call_args.kwargs["owner_user_id"], "user-a")
+                    self.assertEqual(worker.call_args.kwargs["owner_user_id"], user.user_id)
 
                     listed = client.get("/documents")
                     self.assertEqual(listed.status_code, 200)
@@ -203,8 +205,9 @@ class TestDocumentsRoute(TestCase):
 
     def test_list_documents_never_returns_another_users_registry_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            registry = DocumentRegistry(Path(temp_dir) / "registry.sqlite3")
-            user_store = UserStore(Path(temp_dir) / "users.sqlite3")
+            database_path = Path(temp_dir) / "rag.sqlite3"
+            registry = DocumentRegistry(database_path)
+            user_store = UserStore(database_path)
             user_a = user_store.register(email="a@example.com", password="123456", full_name="User A")
             user_b = user_store.register(email="b@example.com", password="123456", full_name="User B")
             registry.create_job(

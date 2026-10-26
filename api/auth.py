@@ -15,17 +15,15 @@ import os
 import secrets
 import sqlite3
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from src.config import PROJECT_ROOT
+from src.storage.rag_database import RagDatabase
 
 TOKEN_TTL_SECONDS = 8 * 60 * 60
 _PASSWORD_N = 2**14
@@ -133,36 +131,14 @@ def decode_access_token(token: str) -> dict:
 
 
 class UserStore:
-    """SQLite-backed user directory; it is intentionally separate from Qdrant."""
+    """SQLite-backed user directory, stored alongside document metadata."""
 
     def __init__(self, db_path: Path | str | None = None):
-        self.db_path = Path(db_path or PROJECT_ROOT / "data" / "processed" / "users.sqlite3")
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        self.database = RagDatabase(db_path)
+        self.db_path = self.database.db_path
 
-    @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.db_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        try:
-            yield connection
-            connection.commit()
-        finally:
-            connection.close()
-
-    def _initialize(self) -> None:
-        with self._connection() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id TEXT PRIMARY KEY,
-                    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                    full_name TEXT NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                )
-                """
-            )
+    def _connection(self):
+        return self.database.connection()
 
     @staticmethod
     def _as_user(row: sqlite3.Row | None) -> CurrentUser | None:
