@@ -1,4 +1,5 @@
-from typing import List, Optional
+from time import perf_counter
+from typing import Dict, List, Optional
 
 from qdrant_client import QdrantClient
 
@@ -56,6 +57,7 @@ class VectorRetriever(BaseRetriever):
         doc_id: Optional[str] = None,
         file_name: Optional[str] = None,
         section_id: Optional[str] = None,
+        timings: Optional[Dict[str, float]] = None,
     ) -> List[RetrievedChunk]:
         """Tạo embedding cho câu query và tìm kiếm các điểm gần nhất trong Qdrant."""
         if not query or not query.strip():
@@ -66,8 +68,14 @@ class VectorRetriever(BaseRetriever):
         logger.info(f"Bắt đầu tìm kiếm vector cho câu hỏi: '{query}' (top_k={limit})")
 
         # 1. Tạo query embedding
+        started = perf_counter()
         self._verify_collection_compatibility()
+        if timings is not None:
+            timings["collection_check_ms"] = timings.get("collection_check_ms", 0.0) + (perf_counter() - started) * 1000
+        started = perf_counter()
         query_vector = self.embedder.embed_query(query)
+        if timings is not None:
+            timings["embedding_ms"] = timings.get("embedding_ms", 0.0) + (perf_counter() - started) * 1000
 
         query_filter = build_payload_filter(
             owner_user_id=owner_user_id,
@@ -83,6 +91,7 @@ class VectorRetriever(BaseRetriever):
 
         # 2. Thực hiện query_points trên Qdrant
         try:
+            started = perf_counter()
             response = self.client.query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
@@ -90,6 +99,8 @@ class VectorRetriever(BaseRetriever):
                 with_payload=True,
                 **query_options,
             )
+            if timings is not None:
+                timings["qdrant_search_ms"] = timings.get("qdrant_search_ms", 0.0) + (perf_counter() - started) * 1000
         except Exception as e:
             err_msg = str(e)
             if "10061" in err_msg or "refused" in err_msg.lower() or "connection" in err_msg.lower():

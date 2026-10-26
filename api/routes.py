@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 from typing import Literal
 from uuid import uuid4
 
@@ -12,15 +13,55 @@ from src.config import PROJECT_ROOT, get_config
 from src.ingestion.document_registry import DocumentRegistry
 from src.ingestion.document_service import document_id_for_bytes, process_document_job
 from src.ingestion.indexer import QdrantIndexer
+from src.logger import get_logger
+from src.monitoring.telemetry import QueryTelemetryStore
 from api.auth import CurrentUser, UserStore, get_current_user, get_user_store, issue_access_token
 
 router = APIRouter()
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+logger = get_logger("api_routes")
 
 
 @lru_cache(maxsize=1)
 def get_document_registry() -> DocumentRegistry:
 	return DocumentRegistry()
+
+
+@lru_cache(maxsize=1)
+def get_telemetry_store() -> QueryTelemetryStore:
+	return QueryTelemetryStore()
+
+
+def _record_query_event(
+	*,
+	current_user: CurrentUser,
+	cfg,
+	status: str,
+	search_mode: str,
+	rerank: bool,
+	top_k: int,
+	top_n: int,
+	source_count: int,
+	timings_ms: dict | None = None,
+	error_type: str | None = None,
+) -> None:
+	"""Telemetry must never prevent a chat response from being returned."""
+	try:
+		get_telemetry_store().record(
+			owner_user_id=current_user.user_id,
+			status=status,
+			search_mode=search_mode,
+			rerank_enabled=rerank,
+			top_k=top_k,
+			top_n=top_n,
+			source_count=source_count,
+			timings_ms=timings_ms,
+			collection_name=getattr(getattr(cfg, "vector_store", None), "collection_name", None),
+			llm_provider=getattr(getattr(cfg, "llm", None), "default_provider", None),
+			error_type=error_type,
+		)
+	except Exception:
+		logger.exception("Không thể ghi telemetry cho query; bỏ qua để không ảnh hưởng câu trả lời.")
 
 
 def _document_response(record: dict) -> dict:
@@ -288,6 +329,7 @@ def _source_payload(chunk) -> dict:
 
 @router.post("/chat")
 def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
+	request_started = perf_counter()
 	cfg = get_config()
 	question = request.question.strip()
 	if not question:
@@ -316,10 +358,35 @@ def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_u
 		owner_user_id=current_user.user_id,
 		)
 	except ConnectionError as exc:
+		_record_query_event(
+			current_user=current_user, cfg=cfg, status="error", search_mode=search_mode, rerank=rerank,
+			top_k=top_k, top_n=top_n, source_count=0,
+			timings_ms={"total_ms": (perf_counter() - request_started) * 1000}, error_type=type(exc).__name__,
+		)
 		raise HTTPException(status_code=503, detail=str(exc)) from exc
+	except Exception as exc:
+		_record_query_event(
+			current_user=current_user, cfg=cfg, status="error", search_mode=search_mode, rerank=rerank,
+			top_k=top_k, top_n=top_n, source_count=0,
+			timings_ms={"total_ms": (perf_counter() - request_started) * 1000}, error_type=type(exc).__name__,
+		)
+		raise
 
 	sources = [_source_payload(chunk) for chunk in response.sources]
 	latency_ms = round((response.latency_seconds or 0) * 1000)
+	timings_ms = dict((getattr(response, "metadata", {}) or {}).get("timings_ms", {}) or {})
+	timings_ms.setdefault("total_ms", float(latency_ms))
+	_record_query_event(
+		current_user=current_user,
+		cfg=cfg,
+		status="success" if sources else "no_context",
+		search_mode=search_mode,
+		rerank=rerank,
+		top_k=top_k,
+		top_n=top_n,
+		source_count=len(sources),
+		timings_ms=timings_ms,
+	)
 	return {
 		"session_id": request.session_id or uuid4().hex[:8],
 		"message_id": uuid4().hex[:8],
@@ -335,3 +402,9 @@ def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_u
 			"configured_top_n": top_n,
 		},
 	}
+
+
+@router.get("/metrics")
+def metrics(current_user: CurrentUser = Depends(get_current_user)) -> dict:
+	"""Return only the authenticated user's operational telemetry."""
+	return get_telemetry_store().dashboard(current_user.user_id)

@@ -92,6 +92,38 @@ class RagDatabase:
                 "CREATE INDEX IF NOT EXISTS idx_documents_owner_content "
                 "ON documents(owner_user_id, content_sha256)"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS query_events (
+                    event_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    search_mode TEXT NOT NULL,
+                    rerank_enabled INTEGER NOT NULL,
+                    top_k INTEGER NOT NULL,
+                    top_n INTEGER NOT NULL,
+                    source_count INTEGER NOT NULL,
+                    total_ms REAL NOT NULL,
+                    retrieval_ms REAL NOT NULL DEFAULT 0,
+                    embedding_ms REAL NOT NULL DEFAULT 0,
+                    qdrant_search_ms REAL NOT NULL DEFAULT 0,
+                    bm25_search_ms REAL NOT NULL DEFAULT 0,
+                    fusion_ms REAL NOT NULL DEFAULT 0,
+                    rerank_ms REAL NOT NULL DEFAULT 0,
+                    context_expansion_ms REAL NOT NULL DEFAULT 0,
+                    generation_ms REAL NOT NULL DEFAULT 0,
+                    collection_name TEXT,
+                    llm_provider TEXT,
+                    error_type TEXT
+                )
+                """
+            )
+            self._ensure_query_event_columns(connection)
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_query_events_owner_created "
+                "ON query_events(owner_user_id, created_at DESC)"
+            )
             if self._migrate_legacy:
                 self._copy_legacy_users(connection)
                 self._copy_legacy_documents(connection)
@@ -103,6 +135,13 @@ class RagDatabase:
             connection.execute("ALTER TABLE documents ADD COLUMN owner_user_id TEXT")
         if "content_sha256" not in columns:
             connection.execute("ALTER TABLE documents ADD COLUMN content_sha256 TEXT")
+
+    @staticmethod
+    def _ensure_query_event_columns(connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(query_events)")}
+        for name in ("retrieval_ms", "fusion_ms"):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE query_events ADD COLUMN {name} REAL NOT NULL DEFAULT 0")
 
     @staticmethod
     def _legacy_rows(path: Path, table_name: str) -> list[sqlite3.Row]:

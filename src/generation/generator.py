@@ -219,6 +219,21 @@ class Generator:
         return cls._get_metadata_value(chunk, "page_number")
 
     @classmethod
+    def _get_section_path(cls, chunk: Any) -> List[str]:
+        """Keep the hierarchy available to the prompt formatter.
+
+        Structured chunks store their hierarchy as a list.  Older payloads can
+        contain a single string, so normalize that shape without inventing a
+        hierarchy when neither form is present.
+        """
+        section_path = cls._get_metadata_value(chunk, "section_path", [])
+        if isinstance(section_path, str):
+            return [section_path.strip()] if section_path.strip() else []
+        if isinstance(section_path, (list, tuple)):
+            return [str(part).strip() for part in section_path if str(part).strip()]
+        return []
+
+    @classmethod
     def _format_chunk(cls, chunk: Any) -> Optional[FormattedChunk]:
         """
         Chuyển chunk ban đầu thành cấu trúc tối giản
@@ -235,6 +250,7 @@ class Generator:
             "breadcrumb": (
                 cls._get_metadata_value(chunk, "breadcrumb", "") or ""
             ),
+            "section_path": cls._get_section_path(chunk),
             "file_name": (
                 cls._get_metadata_value(chunk, "file_name", "") or ""
             ),

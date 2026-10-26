@@ -300,6 +300,20 @@ padding:8px;border-radius:4px;border:1px solid var(--s800)}
 /* ---- pages ---- */
 .st-key-pg_docs,.st-key-pg_metrics{padding:24px}
 .st-key-pg_cfg{padding:24px;max-width:944px}
+.cfg-ro{max-width:896px}.cfg-ro .ph{margin-bottom:16px}.cfg-ro-note{display:flex;gap:10px;align-items:flex-start;
+background:rgba(30,58,95,.62);border:1px solid rgba(59,130,246,.24);border-radius:10px;padding:12px 14px;
+margin-bottom:20px;color:#93c5fd;font-size:12px;line-height:18px}.cfg-ro-note .ico{font-size:15px;line-height:18px}
+.cfg-ro-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.cfg-ro-panel{background:var(--card);
+border:1px solid var(--bd);border-radius:12px;padding:18px;margin-top:16px}.cfg-ro-panel:first-of-type{margin-top:0}
+.cfg-ro-panel-title{display:flex;align-items:center;gap:8px;padding-bottom:12px;margin-bottom:14px;border-bottom:1px solid var(--s800);
+font-size:14px;line-height:20px;font-weight:600;color:var(--s200)}.cfg-ro-panel-title .ic{color:var(--i400)}
+.cfg-ro-item{min-width:0;background:var(--s900);border:1px solid var(--s800);border-radius:8px;padding:12px}
+.cfg-ro-item.wide{grid-column:1/-1}.cfg-ro-k{font-size:11px;line-height:16px;color:var(--s400);margin-bottom:5px}
+.cfg-ro-v{font-size:13px;line-height:20px;font-weight:500;color:var(--s200);overflow-wrap:anywhere}
+.cfg-ro-v.num{font-family:var(--mono)!important;font-size:22px;line-height:28px;color:var(--i300)}
+.cfg-ro-v.status{display:inline-flex;align-items:center;gap:5px;color:var(--em400)}.cfg-ro-v.status.off{color:var(--s400)}
+.cfg-ro-foot{font-size:11px;line-height:16px;color:var(--s500);margin:14px 2px 0}
+@media(max-width:760px){.cfg-ro-grid{grid-template-columns:1fr}.cfg-ro-item.wide{grid-column:auto}}
 .ph .t{font-size:18px;line-height:28px;font-weight:700;color:var(--s100)}
 .ph .d{font-size:12px;line-height:16px;color:var(--s400)}
 [class*="sec_"] button,[class*="pri_"] button{padding:8px 16px;border-radius:8px;font-size:14px;line-height:20px;
@@ -475,6 +489,33 @@ def header_html(title: str, collection: str, mode: str) -> str:
 
 def page_head(title: str, desc: str) -> str:
     return H(f'<div class="ph"><div class="t">{esc(title)}</div><div class="d">{esc(desc)}</div></div>')
+
+
+def readonly_config_html(cfg: dict) -> str:
+    """A self-contained read-only configuration view, insulated from widget CSS."""
+    rerank_enabled = bool(cfg.get("rerank"))
+    rerank_text = "Bật" if rerank_enabled else "Tắt"
+    rerank_class = "status" if rerank_enabled else "status off"
+    return H(f'''<section class="cfg-ro">
+        {page_head("Cấu hình RAG & Retrieval Engine", "Chế độ chỉ đọc · Cấu hình hệ thống được quản trị trong configs/config.yaml.")}
+        <div class="cfg-ro-note"><span class="ico">🔒</span><span>Các thay đổi về chunking, embedding hoặc retrieval có thể yêu cầu ingest/index lại tài liệu. Liên hệ quản trị viên để thay đổi cấu hình hệ thống.</span></div>
+        <div class="cfg-ro-panel"><div class="cfg-ro-panel-title">{ic("scissors")} Chunking Strategy (Phân đoạn văn bản)</div>
+            <div class="cfg-ro-grid">
+                <div class="cfg-ro-item"><div class="cfg-ro-k">Phương pháp chia đoạn</div><div class="cfg-ro-v">{esc(cfg.get("splitter", "-"))}</div></div>
+                <div class="cfg-ro-item"><div class="cfg-ro-k">Chunk size</div><div class="cfg-ro-v num">{esc(cfg.get("chunk_size", "-"))} tokens</div></div>
+                <div class="cfg-ro-item"><div class="cfg-ro-k">Chunk overlap</div><div class="cfg-ro-v num">{esc(cfg.get("chunk_overlap", "-"))} tokens</div></div>
+                <div class="cfg-ro-item wide"><div class="cfg-ro-k">Embedding model</div><div class="cfg-ro-v mono">{esc(cfg.get("embedding", "-"))}</div></div>
+            </div>
+        </div>
+        <div class="cfg-ro-panel"><div class="cfg-ro-panel-title">{ic("search")} Retrieval & Search Strategy</div>
+            <div class="cfg-ro-grid">
+                <div class="cfg-ro-item"><div class="cfg-ro-k">Chế độ truy vấn</div><div class="cfg-ro-v mono">{esc(cfg.get("search_mode", "-"))}</div></div>
+                <div class="cfg-ro-item"><div class="cfg-ro-k">Top-K contexts</div><div class="cfg-ro-v num">{esc(cfg.get("top_k", "-"))}</div></div>
+                <div class="cfg-ro-item"><div class="cfg-ro-k">Re-ranking</div><div class="cfg-ro-v {rerank_class}">{rerank_text}</div></div>
+            </div>
+        </div>
+        <div class="cfg-ro-foot">Giá trị được nạp khi Streamlit khởi động. Sau khi quản trị viên đổi config.yaml, hãy restart API và Streamlit.</div>
+    </section>''')
 
 
 def banner_html() -> str:

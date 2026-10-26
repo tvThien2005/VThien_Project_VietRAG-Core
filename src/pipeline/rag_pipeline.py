@@ -71,6 +71,7 @@ class RAGPipeline:
             raise ValueError("Câu hỏi (query/query_text) không được rỗng.")
 
         start_time = time.time()
+        timings_ms: dict[str, float] = {}
         logger.info(f"Bắt đầu chu trình RAG Pipeline cho câu hỏi: '{target_query}'")
 
         # 1. Truy xuất tài liệu phù hợp (Retrieval + Rerank)
@@ -90,6 +91,7 @@ class RAGPipeline:
             top_n=top_n,
             use_rerank=use_rerank,
             use_hybrid=use_hybrid,
+            timings=timings_ms,
             **filters,
         )
         chunks = self._filter_low_score_chunks(chunks, use_rerank, use_hybrid)
@@ -97,22 +99,27 @@ class RAGPipeline:
         # 2. Xử lý trường hợp không tìm thấy dữ liệu liên quan
         if not chunks:
             latency = time.time() - start_time
+            timings_ms["total_ms"] = latency * 1000
             return RAGResponse(
                 query=target_query,
                 answer=NO_CONTEXT_ANSWER,
                 sources=[],
                 latency_seconds=latency,
+                metadata={"timings_ms": timings_ms},
             )
 
         # 3. Sinh câu trả lời qua LLM Generator
+        generation_started = time.perf_counter()
         answer = self.generator.generate_answer(
             query=target_query,
             chunks=chunks,
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        timings_ms["generation_ms"] = (time.perf_counter() - generation_started) * 1000
 
         latency = time.time() - start_time
+        timings_ms["total_ms"] = latency * 1000
         logger.info(f"Hoàn tất xử lý RAG Pipeline trong {latency:.2f}s")
 
         return RAGResponse(
@@ -125,6 +132,7 @@ class RAGPipeline:
                 "llm_provider": self.cfg.llm.default_provider,
                 "use_rerank": use_rerank,
                 "use_hybrid": use_hybrid,
+                "timings_ms": timings_ms,
             },
         )
 

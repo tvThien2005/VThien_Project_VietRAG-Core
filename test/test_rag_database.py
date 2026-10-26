@@ -5,6 +5,7 @@ from unittest import TestCase
 
 from api.auth import UserStore
 from src.ingestion.document_registry import DocumentRegistry
+from src.monitoring.telemetry import QueryTelemetryStore
 from src.storage.rag_database import RagDatabase
 
 
@@ -87,3 +88,30 @@ class TestRagDatabase(TestCase):
                     doc_id="invalid-owner", owner_user_id="not-a-user", job_id="job-2",
                     file_name="invalid.pdf", file_type="pdf", size=1, source_path="invalid.pdf",
                 )
+
+    def test_query_telemetry_is_owner_scoped_and_has_stage_averages(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = RagDatabase(Path(temp_dir) / "rag.sqlite3")
+            users = UserStore(database.db_path)
+            user_a = users.register(email="a@example.com", password="123456", full_name="User A")
+            user_b = users.register(email="b@example.com", password="123456", full_name="User B")
+            telemetry = QueryTelemetryStore(database)
+            telemetry.record(
+                owner_user_id=user_a.user_id, status="success", search_mode="hybrid", rerank_enabled=False,
+                top_k=10, top_n=4, source_count=2,
+                timings_ms={
+                    "total_ms": 200, "embedding_ms": 20, "qdrant_search_ms": 30,
+                    "bm25_search_ms": 10, "fusion_ms": 0.1, "generation_ms": 150,
+                },
+            )
+            telemetry.record(
+                owner_user_id=user_b.user_id, status="error", search_mode="vector", rerank_enabled=False,
+                top_k=10, top_n=4, source_count=0, timings_ms={"total_ms": 50}, error_type="ConnectionError",
+            )
+
+            dashboard = telemetry.dashboard(user_a.user_id)
+            self.assertEqual(dashboard["kpis"][0]["value"], "1")
+            self.assertEqual(dashboard["kpis"][1]["value"], "100.0%")
+            self.assertEqual(dashboard["kpis"][3]["value"], "0.0%")
+            self.assertIn("20ms", dashboard["latency"][0]["text"])
+            self.assertIn("0.10ms", dashboard["latency"][3]["text"])

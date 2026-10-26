@@ -7,6 +7,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.generation.prompt_builder import PromptBuilder
+from src.generation.generator import Generator
 from src.pipeline.rag_pipeline import RAGPipeline
 from src.retrieval.pipeline import RetrievalPipeline
 from src.schemas.response import RetrievedChunk
@@ -32,12 +33,10 @@ class TestGenerationAndPipeline(unittest.TestCase):
             )
         ]
         context = self.builder.format_context(chunks)
-        self.assertIn("- Thuộc chương: Chương 4: Thực nghiệm", context)
-        self.assertIn("- Thuộc mục: Kết luận", context)
-        self.assertIn("- Nội dung: Mô hình DenseNet201 đạt kết quả 93%.", context)
-        self.assertIn("- Trang + tên file tài liệu: 12 - paper.docx", context)
-        self.assertIn("- Nguồn: paper.docx", context)
-        self.assertIn("- Đường dẫn mục: Không xác định", context)
+        self.assertIn("- Tên file: paper.docx", context)
+        self.assertIn("- Đường dẫn mục (breadcrumb): Kết luận", context)
+        self.assertIn("- Trang: 12", context)
+        self.assertIn("Nội dung:\nMô hình DenseNet201 đạt kết quả 93%.", context)
 
     def test_format_context_uses_fallback_when_metadata_is_missing(self):
         chunk = RetrievedChunk(
@@ -48,13 +47,9 @@ class TestGenerationAndPipeline(unittest.TestCase):
 
         context = self.builder.format_context([chunk])
 
-        self.assertIn("- Thuộc chương: Không xác định", context)
-        self.assertIn("- Thuộc mục: Không xác định", context)
-        self.assertIn("- Nguồn: Không xác định", context)
-        self.assertIn(
-            "- Trang + tên file tài liệu: Không xác định - Không xác định",
-            context,
-        )
+        self.assertIn("- Tên file: Không xác định", context)
+        self.assertIn("- Đường dẫn mục (breadcrumb): Không xác định", context)
+        self.assertIn("- Trang: Không xác định", context)
 
     def test_format_context_preserves_table_caption_and_identity(self):
         chunk = RetrievedChunk(
@@ -76,12 +71,10 @@ class TestGenerationAndPipeline(unittest.TestCase):
 
         context = self.builder.format_context([chunk])
 
-        self.assertIn("- Nguồn: C:/docs/report.docx", context)
-        self.assertIn("- Đường dẫn mục: Results > Model comparison", context)
-        self.assertIn("- Caption bảng: Table 2", context)
-        self.assertIn("- Table ID: table-2", context)
-        self.assertIn("- Trạng thái caption: present", context)
-        self.assertIn("- Trang + tên file tài liệu: 12-13 - report.docx", context)
+        self.assertIn("- Tên file: report.docx", context)
+        self.assertIn("- Đường dẫn mục (breadcrumb): Results > Model comparison", context)
+        self.assertIn("- Trang: 12-13", context)
+        self.assertIn("Caption: Table 2", context)
 
     def test_build_prompt(self):
         chunks = [
@@ -96,6 +89,31 @@ class TestGenerationAndPipeline(unittest.TestCase):
         self.assertIn("phân đoạn ảnh", user_prompt)
         self.assertIn("Đồ án làm về gì?", user_prompt)
         self.assertIn("tiếng Việt", sys_prompt)
+
+    def test_generator_keeps_section_path_for_breadcrumb_fallback(self):
+        chunk = RetrievedChunk(
+            chunk_id="chunk-section-path",
+            text="Nội dung thuộc một mục có cấu trúc.",
+            score=0.9,
+            metadata={
+                "file_name": "fitness.pdf",
+                "section_path": ["Chương 2 Fitness", "2.5.2 Phân loại churn"],
+                "page_start": 37,
+                "page_end": 37,
+            },
+        )
+
+        prepared = Generator._prepare_chunks([chunk])
+        context = self.builder.format_context(prepared)
+
+        self.assertEqual(
+            prepared[0].metadata["section_path"],
+            ["Chương 2 Fitness", "2.5.2 Phân loại churn"],
+        )
+        self.assertIn(
+            "Đường dẫn mục (breadcrumb): Chương 2 Fitness > 2.5.2 Phân loại churn",
+            context,
+        )
 
 
 class TestRAGPipelineContextThreshold(unittest.TestCase):

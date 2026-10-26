@@ -45,7 +45,6 @@ NAV = [("chat", "Chat & Playground"), ("documents", "Kho Tri Thức (KB)"),
        ("config", "Cấu hình Pipeline"), ("metrics", "Giám sát & Metrics")]
 TITLES = {"chat": "RAG Chat Playground", "documents": "Quản lý Tài liệu & Vector Database",
           "config": "Cấu hình RAG & Chunking Parameters", "metrics": "Đánh giá & Analytics Metrics"}
-WIDGET_KEYS = ["cfg_splitter", "cfg_cs", "cfg_ov", "cfg_emb", "cfg_topk", "cfg_rerank", "dk_hybrid", "dk_rerank"]
 DOC_COLS = [3.4, 1.1, 1.4, 2.1, 1.9, 1.2, 1.9]
 DOC_HEAD = ["Tên Tài Liệu", "Kích Thước", "Số Chunks", "Trạng Thái Vector", "Embedding Model", "Ngày Tải Lên",
             "Thao Tác"]
@@ -183,26 +182,11 @@ def clear_chat_upload_job():
     ss.chat_upload_job = None
 
 
-def set_mode(m):
-    ss.cfg["search_mode"] = m
-    ss.cfg["use_hybrid"] = m == "hybrid"
-    ss["dk_hybrid"] = m == "hybrid"
-
-
 def set_hybrid_search():
-    enabled = ss.dk_hybrid
+    """Apply the chat-only Hybrid Search toggle to this session's request options."""
+    enabled = bool(ss.get("dk_hybrid", False))
     ss.cfg["use_hybrid"] = enabled
     ss.cfg["search_mode"] = "hybrid" if enabled else "vector"
-
-
-def reset_cfg():
-    try:
-        ss.cfg = api.reset_config(ss.token)
-        for k in WIDGET_KEYS:
-            ss.pop(k, None)
-        st.toast("Đã đặt lại cấu hình mặc định", icon="↩️")
-    except APIError as e:
-        st.toast(str(e), icon="⚠️")
 
 
 # =========================================================================== #
@@ -305,7 +289,9 @@ def chunks_dialog(doc):
 def _login_request(email, pwd):
     """Worker an toàn: chỉ thực hiện I/O, không truy cập st.session_state."""
     res = api.login(email, pwd)
-    return res, api.get_config(res["access_token"])
+    # Pipeline configuration is system-managed in configs/config.yaml; it is
+    # intentionally not a per-user backend resource.
+    return res, dict(api.DEFAULT_CONFIG)
 
 
 def do_login(email, pwd):
@@ -358,8 +344,6 @@ def auth_progress():
             res, config = result
             ss.token, ss.user = res["access_token"], res["user"]
             ss.cfg = {**api.DEFAULT_CONFIG, **config}
-            for k in WIDGET_KEYS:
-                ss.pop(k, None)
         else:
             ss.auth_notice = "Tạo tài khoản thành công! Hãy chuyển sang tab Đăng nhập."
         ss.auth_task = None
@@ -633,14 +617,12 @@ def page_docs():
         return
 
     with st.container(key="pg_docs"):
-        c1, c2 = st.columns([6, 4])
+        c1, c2 = st.columns([7, 3])
         c1.markdown(ui.page_head("Kho Tri Thức Doanh Nghiệp",
                                  "Quản lý tài liệu nguồn, đồng bộ dữ liệu và quy trình Chunking / Embedding"),
                     unsafe_allow_html=True)
         with c2:
             with st.container(key="rowf_docs"):
-                if st.button("Kết nối Web Crawler", key="sec_crawl"):
-                    crawler_dialog()
                 if st.button("Tải lên Tài liệu", key="pri_upload"):
                     upload_dialog()
 
@@ -701,8 +683,8 @@ def page_metrics():
         st.error(str(e))
         return
     with st.container(key="pg_metrics"):
-        st.markdown(ui.page_head("Đánh giá Hiệu năng RAG Engine",
-                                 "Giám sát độ trễ, độ tin cậy của câu trả lời (Faithfulness) và Relevance score"),
+        st.markdown(ui.page_head("Giám sát vận hành RAG",
+                                 "Dữ liệu thật của các truy vấn gần đây: ngữ cảnh truy xuất, độ trễ và lỗi xử lý."),
                     unsafe_allow_html=True)
         st.markdown(ui.kpis_html(data["kpis"]), unsafe_allow_html=True)
         st.markdown(ui.latency_html(data["latency"]), unsafe_allow_html=True)
@@ -719,76 +701,14 @@ def cached_status(token: str) -> dict:
     return api.get_status(token)
 
 # =========================================================================== #
-# Tab 4: Cấu hình
+# Tab 4: Cấu hình chỉ đọc
 # =========================================================================== #
-def idx(options, value):
-    return options.index(value) if value in options else 0
-
-
 def page_config():
-    cfg = ss.cfg
+    # Read directly from the startup configuration.  Do not use session state:
+    # users must not be able to change ingestion/index compatibility settings.
+    cfg = api.DEFAULT_CONFIG
     with st.container(key="pg_cfg"):
-        st.markdown(ui.page_head("Cấu hình RAG & Retrieval Engine",
-                                 "Điều chỉnh chiến lược Chunking, mô hình Embeddings và thuật toán tìm kiếm tối ưu "
-                                 "cho domain dữ liệu."), unsafe_allow_html=True)
-
-        with st.container(key="card_chunk"):
-            st.markdown(ui.card_head("scissors", "Chunking Strategy (Phân đoạn văn bản)"), unsafe_allow_html=True)
-            a, b = st.columns(2)
-            with a:
-                st.markdown(ui.label("Phương pháp chia đoạn (Splitter)"), unsafe_allow_html=True)
-                cfg["splitter"] = st.selectbox("Splitter", api.SPLITTERS, index=idx(api.SPLITTERS, cfg["splitter"]),
-                                               key="cfg_splitter", label_visibility="collapsed")
-            with b:
-                st.markdown(ui.label("Chunk Size (Tokens):", f'{ss.get("cfg_cs", cfg["chunk_size"])} tokens'),
-                            unsafe_allow_html=True)
-                cfg["chunk_size"] = st.slider("Chunk size", 128, 2048, cfg["chunk_size"], key="cfg_cs",
-                                              label_visibility="collapsed")
-                st.markdown('<div class="ticks"><span>128 (Nhanh)</span><span>512 (Chuẩn)</span>'
-                            '<span>2048 (Ngữ cảnh rộng)</span></div>', unsafe_allow_html=True)
-            with st.container(key="cfg_row2"):
-                a, b = st.columns(2)
-                with a:
-                    st.markdown(ui.label("Chunk Overlap (Độ gối đầu):", f'{ss.get("cfg_ov", cfg["chunk_overlap"])} tokens'),
-                                unsafe_allow_html=True)
-                    cfg["chunk_overlap"] = st.slider("Overlap", 0, 256, cfg["chunk_overlap"], key="cfg_ov",
-                                                     label_visibility="collapsed")
-                with b:
-                    st.markdown(ui.label("Embedding Model Target"), unsafe_allow_html=True)
-                    cfg["embedding"] = st.selectbox("Embedding", api.EMBEDDINGS,
-                                                    index=idx(api.EMBEDDINGS, cfg["embedding"]), key="cfg_emb",
-                                                    label_visibility="collapsed")
-
-        with st.container(key="card_retr"):
-            st.markdown(ui.card_head("search", "Retrieval & Search Strategy"), unsafe_allow_html=True)
-            a, b = st.columns(2)
-            with a:
-                st.markdown(ui.label("Chế độ Truy vấn (Search Mode)"), unsafe_allow_html=True)
-                with st.container(key="mode_row"):
-                    m1, m2, m3 = st.columns(3)
-                    m1.button("Dense Vector", key="mode_vector", on_click=set_mode, args=("vector",))
-                    m2.button("Keyword (BM25)", key="mode_bm25", on_click=set_mode, args=("bm25",))
-                    m3.button("Hybrid Search", key="mode_hybrid", on_click=set_mode, args=("hybrid",))
-            with b:
-                st.markdown(ui.label("Top-K Contexts (Số lượng Chunk trả về)"), unsafe_allow_html=True)
-                with st.container(key="topk_in"):
-                    cfg["top_k"] = int(st.number_input("Top-K", 1, 50, int(cfg["top_k"]), key="cfg_topk",
-                                                       label_visibility="collapsed"))
-            with st.container(key="rr_row"):
-                r1, r2 = st.columns([14, 1])
-                r1.markdown(ui.rerank_html(), unsafe_allow_html=True)
-                cfg["rerank"] = r2.checkbox("Re-ranking", value=cfg["rerank"], key="cfg_rerank",
-                                            label_visibility="collapsed")
-
-        with st.container(key="cfg_foot"):
-            with st.container(key="rowf_cfg"):
-                st.button("Đặt lại mặc định", key="sec_reset", on_click=reset_cfg)
-                if st.button("Lưu Cấu Hình Pipeline", key="pri_save"):
-                    try:
-                        ss.cfg = {**cfg, **api.save_config(ss.token, cfg)}
-                        st.toast("Đã lưu cấu hình pipeline", icon="✅")
-                    except APIError as e:
-                        st.toast(str(e), icon="⚠️")
+        st.markdown(ui.readonly_config_html(cfg), unsafe_allow_html=True)
 
 # =========================================================================== #
 # Main

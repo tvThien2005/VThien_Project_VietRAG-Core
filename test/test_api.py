@@ -93,7 +93,8 @@ class TestChatConfig(TestCase):
 
 class TestChatRoute(TestCase):
 
-    def test_chat_uses_yaml_values_when_ui_does_not_override_them(self):
+    @patch("api.routes.get_telemetry_store")
+    def test_chat_uses_yaml_values_when_ui_does_not_override_them(self, _telemetry):
         rag_response = SimpleNamespace(answer="ok", sources=[], latency_seconds=0.01)
         pipeline = Mock()
         pipeline.query.return_value = rag_response
@@ -118,7 +119,8 @@ class TestChatRoute(TestCase):
             owner_user_id="user-a",
         )
 
-    def test_chat_calls_existing_pipeline_and_returns_sidebar_sources(self):
+    @patch("api.routes.get_telemetry_store")
+    def test_chat_calls_existing_pipeline_and_returns_sidebar_sources(self, _telemetry):
         chunk = SimpleNamespace(
             chunk_id="chunk-1",
             text="Nội dung liên quan.",

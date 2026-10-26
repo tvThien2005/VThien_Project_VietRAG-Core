@@ -39,10 +39,8 @@ HISTORY
 FEEDBACK
   POST   /feedback   {message_id|null, rating:"up"|"down"|null, comment, category}   -> {message}
 CONFIG (Cấu hình Pipeline)
-  GET    /config                                                       -> {splitter, chunk_size, chunk_overlap, embedding,
-                                                                           search_mode, top_k, rerank, hyde}
-  PUT    /config   {…như trên…}                                        -> {…}
-  POST   /config/reset                                                 -> {…}
+  Cấu hình là system-managed trong configs/config.yaml; UI chỉ hiển thị
+  read-only và không gọi endpoint runtime để thay đổi pipeline.
 METRICS (Giám sát)
   GET    /metrics -> {kpis:[{label, value, delta|null, tone, delta_tone, desc}],
                       latency:[{label, text, pct, color}]}   # tone: emerald|indigo|slate|amber
@@ -91,11 +89,19 @@ def _load_pipeline_defaults() -> dict:
     try:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "config.yaml"
         with config_path.open("r", encoding="utf-8") as config_file:
-            retrieval = (yaml.safe_load(config_file) or {}).get("retrieval", {})
+            app_config = yaml.safe_load(config_file) or {}
+        retrieval = app_config.get("retrieval", {})
         hybrid = retrieval.get("hybrid_search", {})
         reranker = retrieval.get("reranker", {})
+        recursive = app_config.get("chunking", {}).get("recursive", {})
+        chunk_strategy = app_config.get("chunking", {}).get("strategy", "recursive")
+        splitter = SPLITTERS[1] if chunk_strategy == "semantic" else SPLITTERS[0]
         use_hybrid = bool(hybrid.get("enabled", defaults["use_hybrid"]))
         defaults.update(
+            splitter=splitter,
+            chunk_size=int(recursive.get("chunk_size", defaults["chunk_size"])),
+            chunk_overlap=int(recursive.get("chunk_overlap", defaults["chunk_overlap"])),
+            embedding=str(app_config.get("embedding", {}).get("model_name", defaults["embedding"])),
             top_k=int(retrieval.get("top_k", defaults["top_k"])),
             top_n=int(reranker.get("top_n", defaults["top_n"])),
             rerank=bool(reranker.get("enabled", defaults["rerank"])),
@@ -371,33 +377,10 @@ def send_feedback(token: str, message_id: str | None = None, rating: str | None 
 
 
 # =========================================================================== #
-#  CONFIG
-# =========================================================================== #
-def get_config(token: str) -> dict:
-    if MOCK_MODE:
-        return dict(_DB["config"].get(_user(token), DEFAULT_CONFIG))
-    return _request("GET", "/config", token)
-
-
-def save_config(token: str, cfg: dict) -> dict:
-    if MOCK_MODE:
-        _DB["config"][_user(token)] = dict(cfg)
-        return dict(cfg)
-    return _request("PUT", "/config", token, json=cfg)
-
-
-def reset_config(token: str) -> dict:
-    if MOCK_MODE:
-        _DB["config"].pop(_user(token), None)
-        return dict(DEFAULT_CONFIG)
-    return _request("POST", "/config/reset", token)
-
-
-# =========================================================================== #
 #  METRICS
 # =========================================================================== #
 def get_metrics(token: str) -> dict:
-    if MOCK_MODE:
+    if MOCK_MODE and not CHAT_API_MODE:
         _user(token)
         return {
             "kpis": [

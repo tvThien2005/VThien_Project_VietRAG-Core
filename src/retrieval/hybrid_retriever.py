@@ -1,4 +1,5 @@
 
+from time import perf_counter
 from typing import Dict, List, Optional
 
 from qdrant_client.http import models
@@ -203,6 +204,7 @@ class HybridRetriever(BaseRetriever):
         doc_id: Optional[str] = None,
         file_name: Optional[str] = None,
         section_id: Optional[str] = None,
+        timings: Optional[Dict[str, float]] = None,
     ) -> List[RetrievedChunk]:
         limit = (
             top_k
@@ -240,6 +242,7 @@ class HybridRetriever(BaseRetriever):
                 dense_results = self.vector_retriever.retrieve(
                     query=query,
                     top_k=candidate_k,
+                    timings=timings,
                 )
             else:
                 dense_results = self.vector_retriever.retrieve(
@@ -249,6 +252,7 @@ class HybridRetriever(BaseRetriever):
                     doc_id=doc_id,
                     file_name=file_name,
                     section_id=section_id,
+                    timings=timings,
                 )
 
         # 2. Sparse BM25 retrieval.
@@ -256,11 +260,14 @@ class HybridRetriever(BaseRetriever):
 
         if self.sparse_weight > 0:
             try:
+                started = perf_counter()
                 sparse_results = self._retrieve_sparse(
                     query=query,
                     candidate_k=candidate_k,
                     query_filter=query_filter,
                 )
+                if timings is not None:
+                    timings["bm25_search_ms"] = timings.get("bm25_search_ms", 0.0) + (perf_counter() - started) * 1000
             except Exception:
                 logger.exception(
                     "BM25 retrieval thất bại. "
@@ -268,11 +275,14 @@ class HybridRetriever(BaseRetriever):
                 )
 
         # 3. Rank fusion.
+        started = perf_counter()
         final_results = self._fuse_results(
             dense_results=dense_results,
             sparse_results=sparse_results,
             limit=limit,
         )
+        if timings is not None:
+            timings["fusion_ms"] = timings.get("fusion_ms", 0.0) + (perf_counter() - started) * 1000
 
         logger.info(
             "Hybrid Search hoàn tất | dense=%d | sparse=%d | final=%d",

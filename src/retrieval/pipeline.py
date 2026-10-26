@@ -1,5 +1,6 @@
 
-from typing import List, Optional
+from time import perf_counter
+from typing import Dict, List, Optional
 
 from src.config import get_config
 from src.logger import get_logger
@@ -85,6 +86,7 @@ class RetrievalPipeline:
         doc_id: Optional[str] = None,
         file_name: Optional[str] = None,
         section_id: Optional[str] = None,
+        timings: Optional[Dict[str, float]] = None,
     ) -> List[RetrievedChunk]:
 
         if not query or not query.strip():
@@ -149,11 +151,16 @@ class RetrievalPipeline:
             )
             if value is not None
         }
-        candidate_chunks = active_retriever.retrieve(
-            query=query,
-            top_k=limit_k,
-            **filters,
-        )
+        started = perf_counter()
+        retrieval_kwargs = {"query": query, "top_k": limit_k, **filters}
+        # Built-in retrievers provide detailed timings.  Third-party/custom
+        # retrievers keep working with the existing method signature.
+        if timings is not None and isinstance(active_retriever, (VectorRetriever, HybridRetriever)):
+            candidate_chunks = active_retriever.retrieve(**retrieval_kwargs, timings=timings)
+        else:
+            candidate_chunks = active_retriever.retrieve(**retrieval_kwargs)
+        if timings is not None:
+            timings["retrieval_ms"] = (perf_counter() - started) * 1000
 
         logger.info(
             "Candidate Retrieval tra ve %d chunks.",
@@ -174,6 +181,7 @@ class RetrievalPipeline:
 
         # Buoc 2: Reranking.
         if enable_rerank:
+            started = perf_counter()
             if self.reranker is None:
                 self.reranker = get_reranker(force=True)
 
@@ -189,6 +197,8 @@ class RetrievalPipeline:
                     "Giữ các chunk từ retrieval ban đầu."
                 )
                 final_chunks = candidate_chunks[:limit_n]
+            if timings is not None:
+                timings["rerank_ms"] = (perf_counter() - started) * 1000
         else:
             logger.info(
                 "Tat Reranking; giu thu hang tu Retriever."
@@ -196,6 +206,7 @@ class RetrievalPipeline:
             final_chunks = candidate_chunks[:limit_n]
 
         if self.context_expander is not None and final_chunks:
+            started = perf_counter()
             if owner_user_id is None:
                 # Preserve the existing library-level API for offline/single
                 # document callers.  API requests always provide an owner.
@@ -210,6 +221,8 @@ class RetrievalPipeline:
                 "Context expansion returned %d chunks within the configured prompt budget.",
                 len(final_chunks),
             )
+            if timings is not None:
+                timings["context_expansion_ms"] = (perf_counter() - started) * 1000
 
         logger.info(
             "Pipeline hoan tat: %d chunks cuoi cung.",
