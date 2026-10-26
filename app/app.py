@@ -104,6 +104,11 @@ def close_drawer():
     ss.drawer_open = False
 
 
+def open_drawer():
+    """Reopen the retrieved-chunks panel without changing the selected answer."""
+    ss.drawer_open = True
+
+
 def toggle_ctx(i):
     if ss.drawer_open and ss.sel_msg == i:
         ss.drawer_open = False
@@ -492,6 +497,12 @@ def page_chat():
     if ss.drawer_open:
         st.markdown(ui.drawer_html(drawer_msg(), ss.cfg["use_hybrid"]), unsafe_allow_html=True)
         st.button("Đóng", key="drawer_close", on_click=close_drawer)
+    else:
+        # Always leave an obvious way to reopen the right panel after it has
+        # been closed.  It is disabled only until an answer has contexts.
+        st.button("Mở chunks", key="drawer_reopen", on_click=open_drawer,
+                  disabled=not bool((drawer_msg() or {}).get("sources")),
+                  help="Hiển thị lại các chunk đã được truy xuất")
     if ss.pop("scroll", False):
         run_js("<script>const d=window.parent.document;const m=d.querySelector('[data-testid=\"stMain\"]')"
                "||d.querySelector('section.main');if(m)m.scrollTo({top:m.scrollHeight,behavior:'smooth'});</script>")
@@ -571,9 +582,35 @@ def doc_row(d):
                     except APIError as e:
                         st.toast(str(e), icon="⚠️")
 
+# =========================================================================== #
+# Tab 3: Metrics
+# =========================================================================== #
+def page_metrics():
+    try:
+        data = api.get_metrics(ss.token)
+    except APIError as e:
+        st.error(str(e))
+        return
+    with st.container(key="pg_metrics"):
+        st.markdown(ui.page_head("Đánh giá Hiệu năng RAG Engine",
+                                 "Giám sát độ trễ, độ tin cậy của câu trả lời (Faithfulness) và Relevance score"),
+                    unsafe_allow_html=True)
+        st.markdown(ui.kpis_html(data["kpis"]), unsafe_allow_html=True)
+        st.markdown(ui.latency_html(data["latency"]), unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=2, show_spinner=False)
+def cached_documents(token: str) -> list[dict]:
+    """Poll documents only while the documents fragment is visible."""
+    return api.list_documents(token)
+
+
+@st.cache_data(ttl=90, show_spinner=False)
+def cached_status(token: str) -> dict:
+    return api.get_status(token)
 
 # =========================================================================== #
-# Tab 3: Cấu hình
+# Tab 4: Cấu hình
 # =========================================================================== #
 def idx(options, value):
     return options.index(value) if value in options else 0
@@ -643,35 +680,6 @@ def page_config():
                         st.toast("Đã lưu cấu hình pipeline", icon="✅")
                     except APIError as e:
                         st.toast(str(e), icon="⚠️")
-
-
-# =========================================================================== #
-# Tab 4: Metrics
-# =========================================================================== #
-def page_metrics():
-    try:
-        data = api.get_metrics(ss.token)
-    except APIError as e:
-        st.error(str(e))
-        return
-    with st.container(key="pg_metrics"):
-        st.markdown(ui.page_head("Đánh giá Hiệu năng RAG Engine",
-                                 "Giám sát độ trễ, độ tin cậy của câu trả lời (Faithfulness) và Relevance score"),
-                    unsafe_allow_html=True)
-        st.markdown(ui.kpis_html(data["kpis"]), unsafe_allow_html=True)
-        st.markdown(ui.latency_html(data["latency"]), unsafe_allow_html=True)
-
-
-@st.cache_data(ttl=2, show_spinner=False)
-def cached_documents(token: str) -> list[dict]:
-    """Poll documents only while the documents fragment is visible."""
-    return api.list_documents(token)
-
-
-@st.cache_data(ttl=90, show_spinner=False)
-def cached_status(token: str) -> dict:
-    return api.get_status(token)
-
 
 # =========================================================================== #
 # Main

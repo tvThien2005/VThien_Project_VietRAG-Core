@@ -62,7 +62,7 @@ def _btn(sel: str, bg: str, color: str, border: str, hbg: str, hcolor: str | Non
 ICON_BUTTONS = {
     ".st-key-nav_chat": "message-square", ".st-key-nav_documents": "database",
     ".st-key-nav_config": "sliders-horizontal", ".st-key-nav_metrics": "activity",
-    ".st-key-ico_logout": "log-out", ".st-key-drawer_close": "x",
+    ".st-key-ico_logout": "log-out", ".st-key-drawer_close": "x", ".st-key-drawer_reopen": "layers",
     '[class*="st-key-fbup_"]': "thumbs-up", '[class*="st-key-fbdn_"]': "thumbs-down",
     '[class*="st-key-ctx_"]': "file-search", ".st-key-hist_new": "plus", ".st-key-hist_del": "trash-2",
     ".st-key-sec_crawl": "link", ".st-key-pri_upload": "upload",
@@ -274,9 +274,9 @@ box-shadow:0 4px 6px -1px rgba(0,0,0,.1),0 2px 4px -2px rgba(0,0,0,.1)}
 .chunk.hl .id{color:var(--i400);background:var(--i950);border:1px solid var(--i800)}
 .chunk .sc{font-weight:500;color:var(--em400)}.chunk .sc.low{color:var(--am400)}
 .chunk .tx{font-size:12px;line-height:1.625;color:var(--s300);background:rgba(2,6,23,.5);padding:10px;
-border-radius:4px;border:1px solid rgba(30,41,59,.8);display:-webkit-box;-webkit-line-clamp:4;
--webkit-box-orient:vertical;overflow:hidden}
-.chunk.dim .tx{color:var(--s400);-webkit-line-clamp:3}
+border-radius:4px;border:1px solid rgba(30,41,59,.8);max-height:240px;overflow-y:auto;overflow-wrap:anywhere;
+white-space:pre-wrap;scrollbar-gutter:stable}
+.chunk.dim .tx{color:var(--s400)}
 .chunk .r3{display:flex;justify-content:space-between;align-items:center;font-size:11px;line-height:16px;
 color:var(--s400);padding-top:4px}
 .chunk .fn{display:flex;align-items:center;gap:4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;
@@ -288,6 +288,8 @@ white-space:nowrap}.chunk .fn .ic{color:var(--s500)}
 padding:8px;border-radius:4px;border:1px solid var(--s800)}
 .st-key-drawer_close{position:fixed;top:82px;right:16px;z-index:1100}
 .st-key-drawer_close button{width:16px;height:16px;padding:0}
+.st-key-drawer_reopen{position:fixed;top:82px;right:16px;z-index:1100}
+.st-key-drawer_reopen button{padding:8px 12px;border-radius:8px;font-size:12px;line-height:16px}
 
 /* ---- pages ---- */
 .st-key-pg_docs,.st-key-pg_metrics{padding:24px}
@@ -389,6 +391,7 @@ _BUTTON_COLORS = (
     + _btn('[class*="st-key-dng_"]', "transparent", "var(--rd400)", "0", "transparent", "#fca5a5")
     + _btn('[class*="st-key-ico_"]', "transparent", "var(--s400)", "0", "var(--s800)", "var(--s200)")
     + _btn(".st-key-drawer_close", "transparent", "var(--s400)", "0", "transparent", "var(--s200)")
+    + _btn(".st-key-drawer_reopen", "var(--i600)", "#fff", "0", "var(--i500)")
     + _btn('[class*="st-key-fbup_"]', "transparent", "var(--s500)", "0", "transparent", "var(--em400)")
     + _btn('[class*="st-key-fbdn_"]', "transparent", "var(--s500)", "0", "transparent", "var(--am400)")
     + _btn('[class*="st-key-ctx_"]', "transparent", "var(--i400)", "0", "transparent", "var(--i400)")
@@ -522,7 +525,8 @@ def chunk_card(i: int, s: dict, hl: bool = False) -> str:
     icon = ic("file-text", 14) if used else ""
     return (f'<div class="{cls}"><div class="r1"><span class="id mono">Chunk #{i}</span>'
             f'<span class="sc mono{low}">Similarity: {float(s.get("score", 0)):.3f}</span></div>'
-            f'<div class="tx">"{esc(s["text"])}"</div><div class="r3"><span class="fn" title="{esc(s["doc_name"])}">'
+            f'<div class="tx" tabindex="0" title="Cuộn để xem toàn bộ nội dung chunk">"{esc(s["text"])}"</div>'
+            f'<div class="r3"><span class="fn" title="{esc(s["doc_name"])}">'
             f'{icon}{esc(s["doc_name"])}</span><span>Trang {esc(s.get("page", "?"))}</span></div></div>')
 
 
