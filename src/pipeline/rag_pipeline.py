@@ -54,6 +54,7 @@ class RAGPipeline:
         top_n: Optional[int] = None,
         use_rerank: Optional[bool] = None,
         use_hybrid: Optional[bool] = None,
+        owner_user_id: Optional[str] = None,
         doc_id: Optional[str] = None,
         file_name: Optional[str] = None,
         section_id: Optional[str] = None,
@@ -76,6 +77,7 @@ class RAGPipeline:
         filters = {
             key: value
             for key, value in (
+                ("owner_user_id", owner_user_id),
                 ("doc_id", doc_id),
                 ("file_name", file_name),
                 ("section_id", section_id),
@@ -134,6 +136,7 @@ class RAGPipeline:
         top_n: Optional[int] = None,
         use_rerank: Optional[bool] = None,
         use_hybrid: Optional[bool] = None,
+        owner_user_id: Optional[str] = None,
         doc_id: Optional[str] = None,
         file_name: Optional[str] = None,
         section_id: Optional[str] = None,
@@ -151,6 +154,7 @@ class RAGPipeline:
         filters = {
             key: value
             for key, value in (
+                ("owner_user_id", owner_user_id),
                 ("doc_id", doc_id),
                 ("file_name", file_name),
                 ("section_id", section_id),

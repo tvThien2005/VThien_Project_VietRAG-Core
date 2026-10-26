@@ -3,6 +3,7 @@ api_client.py - NƠI DUY NHẤT giao tiếp với FastAPI. app.py / ui.py không
 
 Chạy demo không cần backend :  RAG_MOCK=1 (mặc định)
 Nối backend thật            :  RAG_MOCK=0 RAG_API_URL=http://localhost:8000
+Multi-user (auth/chat/docs) :  RAG_CHAT_API=1 RAG_API_URL=http://localhost:8000
 
 ================================ HỢP ĐỒNG API (FastAPI) ================================
 Mọi endpoint (trừ register/login) gửi kèm header:  Authorization: Bearer <access_token>
@@ -63,6 +64,9 @@ CHAT_API_MODE = os.getenv("RAG_CHAT_API", "0") == "1"
 # Khi đang chạy chat thật, mặc định dùng luôn API documents thật. Có thể bật
 # riêng bằng RAG_DOCUMENTS_API=1 trong giai đoạn chuyển đổi.
 DOCUMENTS_API_MODE = os.getenv("RAG_DOCUMENTS_API", os.getenv("RAG_CHAT_API", "0")) == "1"
+# Authentication must use the same identity issuer as the protected chat and
+# document endpoints.  Existing pure-mock runs stay unchanged.
+AUTH_API_MODE = os.getenv("RAG_AUTH_API", os.getenv("RAG_CHAT_API", "0")) == "1" or not MOCK_MODE
 TIMEOUT = 120
 
 SPLITTERS = [
@@ -150,9 +154,15 @@ _DB = {
 
 
 def _user(token: str) -> str:
+    if token in _DB["users"]:
+        return token  # mock: token chính là email
+    # In mixed mode, chat/documents authenticate against FastAPI while the
+    # remaining demo-only UI state stays local and isolated by opaque token.
+    if AUTH_API_MODE and token:
+        return token
     if token not in _DB["users"]:
         raise APIError("Phiên đăng nhập không hợp lệ")
-    return token  # mock: token chính là email
+    return token
 
 
 def _seed_docs() -> dict:
@@ -196,7 +206,7 @@ def _now() -> str:
 #  AUTH
 # =========================================================================== #
 def register(email: str, password: str, full_name: str) -> dict:
-    if MOCK_MODE:
+    if MOCK_MODE and not AUTH_API_MODE:
         if email in _DB["users"]:
             raise APIError("Email đã tồn tại")
         _DB["users"][email] = {"password": password, "full_name": full_name}
@@ -206,7 +216,7 @@ def register(email: str, password: str, full_name: str) -> dict:
 
 
 def login(email: str, password: str) -> dict:
-    if MOCK_MODE:
+    if MOCK_MODE and not AUTH_API_MODE:
         u = _DB["users"].get(email)
         if not u or u["password"] != password:
             raise APIError("Sai email hoặc mật khẩu")

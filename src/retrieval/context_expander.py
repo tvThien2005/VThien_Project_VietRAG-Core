@@ -133,7 +133,12 @@ class ContextExpander:
             )
         return chunks
 
-    def _neighbors(self, seed: RetrievedChunk) -> List[RetrievedChunk]:
+    def _neighbors(
+        self,
+        seed: RetrievedChunk,
+        *,
+        owner_user_id: Optional[str] = None,
+    ) -> List[RetrievedChunk]:
         metadata = seed.metadata
         doc_id = seed.doc_id or metadata.get("doc_id")
         section_id = metadata.get("section_id")
@@ -147,6 +152,7 @@ class ContextExpander:
             return []
 
         query_filter = build_payload_filter(
+            owner_user_id=owner_user_id,
             doc_id=doc_id,
             section_id=section_id,
             chunk_index_min=max(0, index - self.config.neighbor_window),
@@ -262,6 +268,8 @@ class ContextExpander:
         self,
         query: str,
         seeds: List[RetrievedChunk],
+        *,
+        owner_user_id: Optional[str] = None,
     ) -> List[RetrievedChunk]:
         if not seeds:
             return []
@@ -278,7 +286,7 @@ class ContextExpander:
             )
             document_order.setdefault(source, seed_order)
             seeds_by_id.setdefault(seed.chunk_id, seed)
-            for neighbor in self._neighbors(seed):
+            for neighbor in self._neighbors(seed, owner_user_id=owner_user_id):
                 if neighbor.chunk_id not in seeds_by_id:
                     neighbors_by_id.setdefault(neighbor.chunk_id, neighbor)
         for seed_id in seeds_by_id:

@@ -11,6 +11,7 @@ from src.retrieval.hybrid_retriever import HybridRetriever
 from src.config import get_config
 from src.retrieval.vector_retriever import VectorRetriever
 from src.retrieval.pipeline import RetrievalPipeline
+from src.retrieval.qdrant_filters import build_payload_filter
 
 
 class TestRetrieverSchemas(unittest.TestCase):
@@ -30,6 +31,12 @@ class TestRetrieverSchemas(unittest.TestCase):
         self.assertEqual(chunk.page_number, 5)
         self.assertEqual(chunk.section_title, "Giới thiệu")
         self.assertAlmostEqual(chunk.score, 0.92)
+
+    def test_owner_filter_is_a_mandatory_payload_condition(self):
+        query_filter = build_payload_filter(owner_user_id="user-a", doc_id="doc-a")
+
+        self.assertEqual([condition.key for condition in query_filter.must], ["owner_user_id", "doc_id"])
+        self.assertEqual(query_filter.must[0].match.value, "user-a")
 
 
 class TestHybridRetriever(unittest.TestCase):

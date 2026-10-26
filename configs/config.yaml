@@ -58,7 +58,7 @@ embedding:
   model_name: "BAAI/bge-m3"
   provider: "huggingface" # huggingface | sentence-transformers
   dimension: 1024 # 1024 cho bge-m3, 768 cho vietnamese-bi-encoder
-  device: "cpu" # cuda | cpu | mps
+  device: "cuda" # cuda | cpu | mps
   batch_size: 8
   normalize_embeddings: true
   max_length: 8192 # bge-m3 hỗ trợ tối đa 8192 context length
@@ -72,7 +72,7 @@ vector_store:
   port: 6333
   grpc_port: 6334
   prefer_grpc: false
-  collection_name: "vietnamese_docs_stage5_validation_20261017"
+  collection_name: "vietnamese_docs_demo_20261026"
   dense_vector_name: dense # null for the legacy unnamed dense vector; "dense" for versioned indexes
   distance: "Cosine" # Cosine | Dot | Euclidean
   timeout: 30
@@ -100,7 +100,7 @@ retrieval:
 
     bge:
       model_name: "BAAI/bge-reranker-v2-m3"
-      device: "cpu" # cuda | cpu | mps
+      device: "cuda" # cuda | cpu | mps
       batch_size: 4
       max_length: 1024
 
@@ -168,7 +168,7 @@ evaluation:
   judge_embedding:
     provider: "huggingface"
     model_name: "BAAI/bge-m3"
-    device: "cpu"
+    device: "cuda" # cuda | cpu | mps
 
 # ------------------------------------------------------------------------------
 # FastAPI Service

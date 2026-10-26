@@ -252,6 +252,12 @@ resize:none;box-shadow:inset 0 2px 4px 0 rgba(0,0,0,.05)}
 .st-key-formbox::before{content:"";position:absolute;right:64px;top:26px;width:16px;height:16px;z-index:3;
 pointer-events:none;background:var(--s400);-webkit-mask:var(--pc) center/contain no-repeat;
 mask:var(--pc) center/contain no-repeat}
+.st-key-chat_file_upload{position:absolute;right:54px;top:16px;z-index:4;width:36px;height:36px}
+.st-key-chat_file_upload [data-testid="stFileUploader"]{position:absolute;inset:0;width:36px!important;height:36px!important;
+opacity:0;cursor:pointer}
+.st-key-chat_file_upload [data-testid="stFileUploader"] section,
+.st-key-chat_file_upload [data-testid="stFileUploaderDropzone"]{min-height:36px!important;height:36px!important;
+padding:0!important;cursor:pointer}
 .st-key-send_box{position:absolute;right:12px;top:16px;z-index:5;width:36px;height:36px}
 .st-key-send_box button{width:36px;height:36px;padding:0;border-radius:8px;justify-content:center}
 .st-key-send_box button p{font-size:0}

@@ -289,7 +289,7 @@ class QdrantIndexer:
             "Created isolated versioned collection '%s'; existing collections remain untouched.",
             target_collection,
         )
-        for field_name in ("doc_id", "file_name", "section_id", "table_id"):
+        for field_name in ("owner_user_id", "doc_id", "file_name", "section_id", "table_id"):
             self.client.create_payload_index(
                 collection_name=target_collection,
                 field_name=field_name,
@@ -376,18 +376,30 @@ class QdrantIndexer:
         )
         return len(point_ids)
 
-    def _document_points(self, collection_name: str, doc_id: str) -> List[Any]:
+    def _document_points(
+        self,
+        collection_name: str,
+        doc_id: str,
+        owner_user_id: Optional[str] = None,
+    ) -> List[Any]:
         """Return every point belonging to one document without loading vectors."""
         points: List[Any] = []
         offset = None
-        query_filter = models.Filter(
-            must=[
+        conditions = [
+            models.FieldCondition(
+                key="doc_id",
+                match=models.MatchValue(value=doc_id),
+            )
+        ]
+        if owner_user_id is not None:
+            conditions.insert(
+                0,
                 models.FieldCondition(
-                    key="doc_id",
-                    match=models.MatchValue(value=doc_id),
-                )
-            ]
-        )
+                    key="owner_user_id",
+                    match=models.MatchValue(value=owner_user_id),
+                ),
+            )
+        query_filter = models.Filter(must=conditions)
         while True:
             batch, offset = self.client.scroll(
                 collection_name=collection_name,
@@ -400,6 +412,15 @@ class QdrantIndexer:
             points.extend(batch)
             if offset is None:
                 return points
+
+    def ensure_owner_payload_index(self, collection_name: Optional[str] = None) -> None:
+        """Create the ownership filter index without recreating or rewriting points."""
+        self.client.create_payload_index(
+            collection_name=collection_name or self.collection_name,
+            field_name="owner_user_id",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+            wait=True,
+        )
 
     def _validate_append_schema(
         self,
@@ -500,6 +521,9 @@ class QdrantIndexer:
             tokenizer,
             token_limit,
         )
+        # This is idempotent in Qdrant and only builds an index.  It never
+        # recreates the active collection or mutates existing point payloads.
+        self.ensure_owner_payload_index(target_collection)
 
         existing_points = self._document_points(target_collection, doc_id)
         if existing_points and not replace_document:
@@ -536,6 +560,7 @@ class QdrantIndexer:
                     **chunk.metadata,
                     "text": chunk.text,
                     "doc_id": doc_id,
+                    "owner_user_id": chunk.metadata.get("owner_user_id"),
                     "chunk_id": chunk.chunk_id,
                     "chunk_index": chunk.chunk_index,
                     "file_name": chunk.metadata.get("file_name", ""),

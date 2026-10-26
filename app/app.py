@@ -80,7 +80,8 @@ ensure_theme()
 for _k, _v in {"sb_open": True, "token": None, "user": None, "tab": "chat", "drawer_open": True, "sel_msg": None,
                "messages": [], "session_id": None, "fb": {}, "dz_nonce": 0, "scroll": False,
                "cfg": dict(api.DEFAULT_CONFIG), "chat_task": None, "auth_task": None,
-               "auth_notice": None, "document_count": 0}.items():
+               "auth_notice": None, "document_count": 0, "chat_upload_nonce": 0,
+               "chat_upload_job": None, "show_logout_dialog": False, "delete_doc_to_confirm": None}.items():
     ss.setdefault(_k, _v)
 
 if "use_hybrid" not in ss.cfg:
@@ -162,6 +163,26 @@ def logout():
     ss.messages, ss.fb, ss.tab, ss.chat_task, ss.document_count = [], {}, "chat", None, 0
 
 
+def request_logout():
+    ss.show_logout_dialog = True
+
+
+def dismiss_logout_dialog():
+    ss.show_logout_dialog = False
+
+
+def request_delete_document(doc: dict):
+    ss.delete_doc_to_confirm = {"id": doc["id"], "name": doc["name"], "status": doc["status"]}
+
+
+def dismiss_delete_dialog():
+    ss.delete_doc_to_confirm = None
+
+
+def clear_chat_upload_job():
+    ss.chat_upload_job = None
+
+
 def set_mode(m):
     ss.cfg["search_mode"] = m
     ss.cfg["use_hybrid"] = m == "hybrid"
@@ -187,7 +208,7 @@ def reset_cfg():
 # =========================================================================== #
 # Dialogs
 # =========================================================================== #
-def ingest(files) -> int:
+def ingest(files, on_queued=None) -> int:
     ok = 0
     for f in files:
         ext = f.name.rsplit(".", 1)[-1].lower()
@@ -197,7 +218,9 @@ def ingest(files) -> int:
             st.toast(f"'{f.name}' vượt quá {MAX_MB}MB", icon="⚠️")
         else:
             try:
-                api.upload_document(ss.token, f.name, f.getvalue(), f.type)
+                queued_document = api.upload_document(ss.token, f.name, f.getvalue(), f.type)
+                if on_queued is not None:
+                    on_queued(queued_document)
                 ok += 1
             except APIError as e:
                 st.toast(f"{f.name}: {e}", icon="⚠️")
@@ -206,6 +229,38 @@ def ingest(files) -> int:
         # Xóa cache sau khi queue job để lần render kế tiếp thấy trạng thái mới.
         cached_documents.clear()
     return ok
+
+
+@st.dialog("Xác nhận đăng xuất", on_dismiss=dismiss_logout_dialog)
+def logout_confirm_dialog():
+    st.warning("Bạn sẽ cần đăng nhập lại để tiếp tục sử dụng hệ thống.")
+    cancel, confirm = st.columns(2)
+    if cancel.button("Hủy", key="logout_cancel"):
+        dismiss_logout_dialog()
+        st.rerun()
+    if confirm.button("Đăng xuất", key="logout_confirm_button", type="primary"):
+        dismiss_logout_dialog()
+        logout()
+        st.rerun()
+
+
+@st.dialog("Xác nhận xóa tài liệu", on_dismiss=dismiss_delete_dialog)
+def delete_document_confirm_dialog(doc: dict):
+    st.warning(f"Xóa '{doc['name']}'?")
+    st.caption("Toàn bộ chunks/vectors của tài liệu này sẽ bị xóa khỏi collection hiện tại.")
+    cancel, confirm = st.columns(2)
+    if cancel.button("Hủy", key="delete_doc_cancel"):
+        dismiss_delete_dialog()
+        st.rerun()
+    if confirm.button("Xóa tài liệu", key="delete_doc_confirm", type="primary"):
+        try:
+            api.delete_document(ss.token, doc["id"])
+            cached_documents.clear()
+            dismiss_delete_dialog()
+            st.toast("Đã xóa tài liệu và các chunks liên quan.", icon="✅")
+            st.rerun()
+        except APIError as e:
+            st.error(str(e))
 
 
 @st.dialog("Tải lên Tài liệu")
@@ -317,7 +372,7 @@ def auth_page():
     pending = bool(ss.get("auth_task"))
     with st.container(key="auth"):
         st.markdown(ui.logo_html(), unsafe_allow_html=True)
-        if api.MOCK_MODE:
+        if api.MOCK_MODE and not api.AUTH_API_MODE:
             st.markdown(ui.auth_note_html(), unsafe_allow_html=True)
         t_in, t_up = st.tabs(["Đăng nhập", "Tạo tài khoản"])
         with t_in:
@@ -367,7 +422,7 @@ def sidebar(status):
             with st.container(key="side_user"):
                 c1, c2 = st.columns([5, 1])
                 c1.markdown(ui.user_html(ss.user), unsafe_allow_html=True)
-                c2.button("Đăng xuất", key="ico_logout", on_click=logout, help="Đăng xuất")
+                c2.button("Đăng xuất", key="ico_logout", on_click=request_logout, help="Đăng xuất")
 
 
 # =========================================================================== #
@@ -443,6 +498,33 @@ def dock():
                                      disabled=pending)
                     with st.container(key="send_box"):
                         sent = st.form_submit_button("Đang xử lý..." if pending else "Gửi", disabled=pending)
+                # The transparent uploader overlays the paperclip drawn by CSS.
+                # Selecting a file queues the same ingestion flow as the KB page.
+                with st.container(key="chat_file_upload"):
+                    chat_file = st.file_uploader(
+                        "Đính kèm tài liệu PDF hoặc DOCX",
+                        type=ALLOWED_EXT,
+                        key=f"chat_up_{ss.chat_upload_nonce}",
+                        label_visibility="collapsed",
+                        disabled=pending,
+                    )
+    if chat_file:
+        filename = chat_file.name
+        queued_records = []
+        with st.spinner(f"Đang gửi '{filename}' để xử lý..."):
+            queued = ingest([chat_file], on_queued=queued_records.append)
+        # Reset the file widget whether the upload was accepted or rejected;
+        # otherwise Streamlit would re-submit it on every rerun.
+        ss.chat_upload_nonce += 1
+        if queued and queued_records:
+            record = queued_records[0]
+            ss.chat_upload_job = {
+                "id": record.get("id"),
+                "job_id": record.get("job_id"),
+                "name": record.get("name") or filename,
+                "status": record.get("status", "queued"),
+            }
+        st.rerun()
     if sent and q.strip():
         send_question(q.strip())
 
@@ -488,9 +570,39 @@ def chat_feed():
     _render_chat_feed()
 
 
+@st.fragment(run_every=3)
+def chat_upload_status():
+    """Show a persistent, polling upload state instead of a fleeting toast."""
+    job = ss.get("chat_upload_job")
+    if not job:
+        return
+    current = job
+    try:
+        documents = cached_documents(ss.token)
+        current = next((doc for doc in documents if doc.get("id") == job.get("id")), job)
+    except APIError:
+        pass
+
+    state = current.get("status", "queued")
+    filename = current.get("name") or job.get("name") or "tài liệu"
+    if state in {"queued", "processing"}:
+        with st.status(f"Đang xử lý '{filename}'", state="running", expanded=True):
+            st.write("Tài liệu đã được gửi. Hệ thống đang parse, chunk và embedding vào kho tri thức.")
+            st.caption("Bạn có thể tiếp tục chat; tài liệu sẽ được dùng khi trạng thái chuyển sang sẵn sàng.")
+    elif state == "ready":
+        with st.status(f"'{filename}' đã sẵn sàng", state="complete", expanded=True):
+            st.write("Chunking và embedding đã hoàn tất. Các câu hỏi mới có thể truy xuất tài liệu này.")
+            st.button("Ẩn thông báo", key="chat_upload_status_close", on_click=clear_chat_upload_job)
+    else:
+        with st.status(f"Không thể xử lý '{filename}'", state="error", expanded=True):
+            st.write(current.get("error") or "Job ingest thất bại. Hãy kiểm tra lại tài liệu rồi thử lại.")
+            st.button("Ẩn thông báo", key="chat_upload_status_close", on_click=clear_chat_upload_job)
+
+
 def page_chat():
     with st.container(key="chatpane"):
         history_bar()
+        chat_upload_status()
         st.markdown(ui.banner_html(), unsafe_allow_html=True)
         chat_feed()
     dock()
@@ -558,8 +670,6 @@ def page_docs():
                             unsafe_allow_html=True)
             for d in shown:
                 doc_row(d)
-
-
 def doc_row(d):
     k = d["id"]
     with st.container(key=f"trow_{k}"):
@@ -575,12 +685,11 @@ def doc_row(d):
                 if st.button("Xem Chunks", key=f"lnk_view_{k}", disabled=d["status"] != "ready"):
                     chunks_dialog(d)
                 if st.button("Hủy" if d["status"] == "processing" else "Xóa", key=f"dng_del_{k}"):
-                    try:
-                        api.delete_document(ss.token, k)
-                        cached_documents.clear()
-                        st.rerun()
-                    except APIError as e:
-                        st.toast(str(e), icon="⚠️")
+                    request_delete_document(d)
+                    # A button inside a fragment normally reruns that fragment
+                    # only.  The confirmation modal is rendered by main(), so
+                    # switch to a full app rerun before opening it.
+                    st.rerun(scope="app")
 
 # =========================================================================== #
 # Tab 3: Metrics
@@ -709,12 +818,16 @@ def main():
            "var s=p.document.createElement('script');s.textContent=" + json.dumps(SIDEBAR_JS) +
            ";p.document.head.appendChild(s);})();</script>")
     sidebar(status)
+    if ss.get("show_logout_dialog"):
+        logout_confirm_dialog()
     st.markdown(ui.header_html(TITLES[ss.tab], status["collection"], ss.cfg["search_mode"]),
                 unsafe_allow_html=True)
     if ss.tab == "chat":
         page_chat()
     elif ss.tab == "documents":
         page_docs()
+        if ss.get("delete_doc_to_confirm"):
+            delete_document_confirm_dialog(ss.delete_doc_to_confirm)
     elif ss.tab == "config":
         page_config()
     else:

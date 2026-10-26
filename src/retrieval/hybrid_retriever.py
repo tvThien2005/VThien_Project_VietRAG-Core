@@ -199,6 +199,7 @@ class HybridRetriever(BaseRetriever):
         query: str,
         top_k: Optional[int] = None,
         *,
+        owner_user_id: Optional[str] = None,
         doc_id: Optional[str] = None,
         file_name: Optional[str] = None,
         section_id: Optional[str] = None,
@@ -215,6 +216,7 @@ class HybridRetriever(BaseRetriever):
         query = query.strip()
         candidate_k = self._get_candidate_limit(limit)
         query_filter = build_payload_filter(
+            owner_user_id=owner_user_id,
             doc_id=doc_id,
             file_name=file_name,
             section_id=section_id,
@@ -243,6 +245,7 @@ class HybridRetriever(BaseRetriever):
                 dense_results = self.vector_retriever.retrieve(
                     query=query,
                     top_k=candidate_k,
+                    owner_user_id=owner_user_id,
                     doc_id=doc_id,
                     file_name=file_name,
                     section_id=section_id,

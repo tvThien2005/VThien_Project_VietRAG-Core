@@ -109,6 +109,33 @@ class TestContextExpansion(unittest.TestCase):
         self.assertEqual(client.last_filter.must[0].key, "doc_id")
         self.assertEqual(client.last_filter.must[1].key, "section_id")
 
+    def test_neighbors_keep_the_authenticated_owner_scope(self):
+        points = [
+            stored_point("previous", "before seed", "doc-a", "section-a", 0),
+            stored_point("seed", "seed content", "doc-a", "section-a", 1),
+            stored_point("other-owner", "private content", "doc-a", "section-a", 2),
+        ]
+        points[0].payload["owner_user_id"] = "user-a"
+        points[1].payload["owner_user_id"] = "user-a"
+        points[2].payload["owner_user_id"] = "user-b"
+        client = FilteredScrollClient(points)
+        seed = RetrievedChunk(
+            chunk_id="seed", doc_id="doc-a", text="seed content", score=0.9, rank=1,
+            metadata=points[1].payload,
+        )
+        expander = ContextExpander(
+            client=client,
+            collection_name="versioned-test",
+            tokenizer=WordTokenizer(),
+            config=ContextExpansionConfig(enabled=True, neighbor_window=1, max_prompt_tokens=10_000),
+        )
+
+        expanded = expander.expand("question", [seed], owner_user_id="user-a")
+
+        self.assertEqual([chunk.chunk_id for chunk in expanded], ["previous", "seed"])
+        self.assertEqual(client.last_filter.must[0].key, "owner_user_id")
+        self.assertEqual(client.last_filter.must[0].match.value, "user-a")
+
     def test_full_prompt_budget_limits_context_growth(self):
         shared = "word " * 80
         points = [

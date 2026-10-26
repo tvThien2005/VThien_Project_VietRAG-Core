@@ -76,6 +76,38 @@ class TestDocumentRegistry(unittest.TestCase):
         self.assertEqual(record["status"], "queued")
         self.assertEqual(record["chunk_count"], 0)
 
+    def test_owner_scope_keeps_identical_content_in_separate_document_libraries(self):
+        self.registry.create_job(
+            doc_id="document-user-a",
+            owner_user_id="user-a",
+            content_sha256="same-content",
+            job_id="job-a",
+            file_name="policy.pdf",
+            file_type="pdf",
+            size=100,
+            source_path="a.pdf",
+        )
+        self.registry.create_job(
+            doc_id="document-user-b",
+            owner_user_id="user-b",
+            content_sha256="same-content",
+            job_id="job-b",
+            file_name="policy.pdf",
+            file_type="pdf",
+            size=100,
+            source_path="b.pdf",
+        )
+
+        self.assertEqual(
+            [record["doc_id"] for record in self.registry.list_documents("user-a")],
+            ["document-user-a"],
+        )
+        self.assertEqual(
+            self.registry.find_by_owner_content("user-b", "same-content")["doc_id"],
+            "document-user-b",
+        )
+        self.assertIsNone(self.registry.get_owned("document-user-a", "user-b"))
+
 
 if __name__ == "__main__":
     unittest.main()

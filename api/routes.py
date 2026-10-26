@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -12,6 +12,7 @@ from src.config import PROJECT_ROOT, get_config
 from src.ingestion.document_registry import DocumentRegistry
 from src.ingestion.document_service import document_id_for_bytes, process_document_job
 from src.ingestion.indexer import QdrantIndexer
+from api.auth import CurrentUser, UserStore, get_current_user, get_user_store, issue_access_token
 
 router = APIRouter()
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -39,8 +40,57 @@ def _document_response(record: dict) -> dict:
 	}
 
 
+class RegisterRequest(BaseModel):
+	email: str = Field(min_length=3, max_length=320)
+	password: str = Field(min_length=6, max_length=256)
+	full_name: str = Field(min_length=1, max_length=200)
+
+
+class LoginRequest(BaseModel):
+	email: str = Field(min_length=3, max_length=320)
+	password: str = Field(min_length=1, max_length=256)
+
+
+def _user_payload(user: CurrentUser) -> dict:
+	return {"id": user.user_id, "email": user.email, "full_name": user.full_name}
+
+
+def _owner_filter(owner_user_id: str) -> models.Filter:
+	return models.Filter(
+		must=[
+			models.FieldCondition(
+				key="owner_user_id",
+				match=models.MatchValue(value=owner_user_id),
+			)
+		]
+	)
+
+
+@router.post("/auth/register", status_code=status.HTTP_201_CREATED)
+def register(request: RegisterRequest, user_store: UserStore = Depends(get_user_store)) -> dict:
+	try:
+		user = user_store.register(
+			email=request.email,
+			password=request.password,
+			full_name=request.full_name,
+		)
+	except FileExistsError as exc:
+		raise HTTPException(status_code=409, detail=str(exc)) from exc
+	except ValueError as exc:
+		raise HTTPException(status_code=422, detail=str(exc)) from exc
+	return {"message": "Đăng ký thành công.", "user": _user_payload(user)}
+
+
+@router.post("/auth/login")
+def login(request: LoginRequest, user_store: UserStore = Depends(get_user_store)) -> dict:
+	user = user_store.authenticate(email=request.email, password=request.password)
+	if user is None:
+		raise HTTPException(status_code=401, detail="Email hoặc mật khẩu không đúng.")
+	return {"access_token": issue_access_token(user), "token_type": "bearer", "user": _user_payload(user)}
+
+
 @router.get("/system/status")
-def system_status() -> dict:
+def system_status(current_user: CurrentUser = Depends(get_current_user)) -> dict:
 	cfg = get_config()
 	client = None
 	try:
@@ -52,10 +102,12 @@ def system_status() -> dict:
 		)
 		total_vectors = client.count(
 			collection_name=cfg.vector_store.collection_name,
+			count_filter=_owner_filter(current_user.user_id),
 			exact=False,
 		).count
 		points, _ = client.scroll(
 			collection_name=cfg.vector_store.collection_name,
+			scroll_filter=_owner_filter(current_user.user_id),
 			limit=1,
 			with_payload=["embedding_model"],
 			with_vectors=False,
@@ -87,6 +139,7 @@ async def upload_document(
 	background_tasks: BackgroundTasks,
 	file: UploadFile = File(...),
 	duplicate_policy: Literal["reject", "replace"] = Form("reject"),
+	current_user: CurrentUser = Depends(get_current_user),
 ) -> dict:
 	"""Store an upload and enqueue safe append into the configured collection."""
 	cfg = get_config()
@@ -100,13 +153,17 @@ async def upload_document(
 	if len(content) > MAX_UPLOAD_BYTES:
 		raise HTTPException(status_code=413, detail="Kích thước file vượt quá 10 MB.")
 
-	doc_id = document_id_for_bytes(content)
-	upload_dir = PROJECT_ROOT / "data" / "raw" / "uploads"
+	content_sha256 = document_id_for_bytes(content)
+	registry = get_document_registry()
+	existing = registry.find_by_owner_content(current_user.user_id, content_sha256)
+	if existing and duplicate_policy == "reject":
+		raise HTTPException(status_code=409, detail="Tài liệu này đã được index trong kho của bạn.")
+	doc_id = existing["doc_id"] if existing else uuid4().hex
+	upload_dir = PROJECT_ROOT / "data" / "raw" / "uploads" / current_user.user_id
 	upload_dir.mkdir(parents=True, exist_ok=True)
 	source_path = upload_dir / f"{doc_id}{extension}"
 	source_path.write_bytes(content)
 
-	registry = get_document_registry()
 	try:
 		record = registry.create_job(
 			doc_id=doc_id,
@@ -115,6 +172,8 @@ async def upload_document(
 			file_type=extension.lstrip("."),
 			size=len(content),
 			source_path=str(source_path),
+		owner_user_id=current_user.user_id,
+		content_sha256=content_sha256,
 			replace_existing=duplicate_policy == "replace",
 		)
 	except FileExistsError as exc:
@@ -128,19 +187,23 @@ async def upload_document(
 		doc_id=doc_id,
 		source_path=source_path,
 		file_name=filename,
+		owner_user_id=current_user.user_id,
 		replace_existing=duplicate_policy == "replace",
 	)
 	return _document_response(record)
 
 
 @router.get("/documents")
-def list_documents() -> list[dict]:
-	return [_document_response(record) for record in get_document_registry().list_documents()]
+def list_documents(current_user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+	return [
+		_document_response(record)
+		for record in get_document_registry().list_documents(current_user.user_id)
+	]
 
 
 @router.get("/documents/{doc_id}/chunks")
-def document_chunks(doc_id: str) -> list[dict]:
-	record = get_document_registry().get(doc_id)
+def document_chunks(doc_id: str, current_user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+	record = get_document_registry().get_owned(doc_id, current_user.user_id)
 	if not record:
 		raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu.")
 	if record["status"] != "ready":
@@ -148,7 +211,7 @@ def document_chunks(doc_id: str) -> list[dict]:
 
 	try:
 		indexer = QdrantIndexer(collection_name=record["collection_name"])
-		points = indexer._document_points(record["collection_name"], doc_id)
+		points = indexer._document_points(record["collection_name"], doc_id, current_user.user_id)
 	except Exception as exc:
 		raise HTTPException(status_code=503, detail=f"Không thể đọc chunks từ Qdrant: {exc}") from exc
 
@@ -165,17 +228,17 @@ def document_chunks(doc_id: str) -> list[dict]:
 
 
 @router.delete("/documents/{doc_id}")
-def delete_document(doc_id: str) -> dict:
+def delete_document(doc_id: str, current_user: CurrentUser = Depends(get_current_user)) -> dict:
 	"""Remove only one ready document's Qdrant points; keep source artifacts for audit."""
 	registry = get_document_registry()
-	record = registry.get(doc_id)
+	record = registry.get_owned(doc_id, current_user.user_id)
 	if not record:
 		raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu.")
 	if record["status"] in {"queued", "processing"}:
 		raise HTTPException(status_code=409, detail="Không thể xóa tài liệu đang được xử lý.")
 	try:
 		indexer = QdrantIndexer(collection_name=record["collection_name"])
-		points = indexer._document_points(record["collection_name"], doc_id)
+		points = indexer._document_points(record["collection_name"], doc_id, current_user.user_id)
 		if points:
 			indexer.client.delete(
 				collection_name=record["collection_name"],
@@ -224,7 +287,7 @@ def _source_payload(chunk) -> dict:
 
 
 @router.post("/chat")
-def chat(request: ChatRequest) -> dict:
+def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
 	cfg = get_config()
 	question = request.question.strip()
 	if not question:
@@ -250,6 +313,7 @@ def chat(request: ChatRequest) -> dict:
 			top_n=top_n,
 			use_rerank=rerank,
 			use_hybrid=search_mode == "hybrid",
+		owner_user_id=current_user.user_id,
 		)
 	except ConnectionError as exc:
 		raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -81,6 +81,7 @@ class RetrievalPipeline:
         top_n: Optional[int] = None,
         use_rerank: Optional[bool] = None,
         use_hybrid: Optional[bool] = None,
+        owner_user_id: Optional[str] = None,
         doc_id: Optional[str] = None,
         file_name: Optional[str] = None,
         section_id: Optional[str] = None,
@@ -141,6 +142,7 @@ class RetrievalPipeline:
         filters = {
             key: value
             for key, value in (
+                ("owner_user_id", owner_user_id),
                 ("doc_id", doc_id),
                 ("file_name", file_name),
                 ("section_id", section_id),
@@ -194,7 +196,16 @@ class RetrievalPipeline:
             final_chunks = candidate_chunks[:limit_n]
 
         if self.context_expander is not None and final_chunks:
-            final_chunks = self.context_expander.expand(query, final_chunks)
+            if owner_user_id is None:
+                # Preserve the existing library-level API for offline/single
+                # document callers.  API requests always provide an owner.
+                final_chunks = self.context_expander.expand(query, final_chunks)
+            else:
+                final_chunks = self.context_expander.expand(
+                    query,
+                    final_chunks,
+                    owner_user_id=owner_user_id,
+                )
             logger.info(
                 "Context expansion returned %d chunks within the configured prompt budget.",
                 len(final_chunks),

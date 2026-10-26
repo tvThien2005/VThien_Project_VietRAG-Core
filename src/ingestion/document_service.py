@@ -45,6 +45,7 @@ def process_document_job(
     doc_id: str,
     source_path: str | Path,
     file_name: str,
+    owner_user_id: str,
     replace_existing: bool = False,
 ) -> None:
     """Run outside the request handler; all errors become durable job state."""
@@ -61,6 +62,7 @@ def process_document_job(
                 **chunk.metadata,
                 "doc_id": doc_id,
                 "file_name": file_name,
+                "owner_user_id": owner_user_id,
             }
 
         artifact = chunk_artifact_path(doc_id)

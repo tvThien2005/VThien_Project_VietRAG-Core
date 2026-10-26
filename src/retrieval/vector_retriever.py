@@ -52,6 +52,7 @@ class VectorRetriever(BaseRetriever):
         query: str,
         top_k: Optional[int] = None,
         *,
+        owner_user_id: Optional[str] = None,
         doc_id: Optional[str] = None,
         file_name: Optional[str] = None,
         section_id: Optional[str] = None,
@@ -69,6 +70,7 @@ class VectorRetriever(BaseRetriever):
         query_vector = self.embedder.embed_query(query)
 
         query_filter = build_payload_filter(
+            owner_user_id=owner_user_id,
             doc_id=doc_id,
             file_name=file_name,
             section_id=section_id,

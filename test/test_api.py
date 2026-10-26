@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -11,9 +11,12 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import api_client
+from api.auth import CurrentUser, UserStore, get_current_user, get_user_store
 from api.main import app
 from api.routes import ChatRequest, chat, system_status
 from src.ingestion.document_registry import DocumentRegistry
+
+TEST_USER = CurrentUser(user_id="user-a", email="a@example.com", full_name="User A")
 
 
 class TestSystemStatus(TestCase):
@@ -38,12 +41,15 @@ class TestSystemStatus(TestCase):
             payload={"embedding_model": "indexed-model"},
         )], None)
 
-        result = system_status()
+        result = system_status(TEST_USER)
 
         client.count.assert_called_once_with(
             collection_name="demo_collection",
+            count_filter=ANY,
             exact=False,
         )
+        self.assertEqual(client.count.call_args.kwargs["count_filter"].must[0].key, "owner_user_id")
+        self.assertEqual(client.count.call_args.kwargs["count_filter"].must[0].match.value, "user-a")
         self.assertEqual(result["total_vectors"], 724)
         self.assertEqual(result["embedding_model"], "indexed-model")
         self.assertEqual(result["collection"], "demo_collection")
@@ -101,7 +107,7 @@ class TestChatRoute(TestCase):
 
         with patch("api.routes.get_config", return_value=config), \
              patch("api.routes.get_rag_pipeline", return_value=pipeline):
-            chat(ChatRequest(question="Câu hỏi demo"))
+            chat(ChatRequest(question="Câu hỏi demo"), TEST_USER)
 
         pipeline.query.assert_called_once_with(
             query_text="Câu hỏi demo",
@@ -109,6 +115,7 @@ class TestChatRoute(TestCase):
             top_n=4,
             use_rerank=False,
             use_hybrid=False,
+            owner_user_id="user-a",
         )
 
     def test_chat_calls_existing_pipeline_and_returns_sidebar_sources(self):
@@ -141,7 +148,7 @@ class TestChatRoute(TestCase):
                 search_mode="hybrid",
                 top_k=3,
                 rerank=True,
-            ))
+            ), TEST_USER)
 
         pipeline.query.assert_called_once_with(
             query_text="Câu hỏi demo",
@@ -149,6 +156,7 @@ class TestChatRoute(TestCase):
             top_n=4,
             use_rerank=True,
             use_hybrid=True,
+            owner_user_id="user-a",
         )
         self.assertEqual(result["answer"], "Câu trả lời [1].")
         self.assertEqual(result["sources"][0]["doc_name"], "paper.pdf")
@@ -173,17 +181,45 @@ class TestDocumentsRoute(TestCase):
                  patch("api.routes.get_document_registry", return_value=registry), \
                  patch("api.routes.process_document_job") as worker:
                 client = TestClient(app)
-                response = client.post(
-                    "/documents",
-                    files={"file": ("policy.pdf", b"%PDF-demo", "application/pdf")},
-                )
-                self.assertEqual(response.status_code, 202)
-                document = response.json()
-                self.assertEqual(document["name"], "policy.pdf")
-                self.assertEqual(document["status"], "queued")
-                self.assertTrue(document["job_id"])
-                worker.assert_called_once()
+                app.dependency_overrides[get_current_user] = lambda: TEST_USER
+                try:
+                    response = client.post(
+                        "/documents",
+                        files={"file": ("policy.pdf", b"%PDF-demo", "application/pdf")},
+                    )
+                    self.assertEqual(response.status_code, 202)
+                    document = response.json()
+                    self.assertEqual(document["name"], "policy.pdf")
+                    self.assertEqual(document["status"], "queued")
+                    self.assertTrue(document["job_id"])
+                    worker.assert_called_once()
+                    self.assertEqual(worker.call_args.kwargs["owner_user_id"], "user-a")
 
-                listed = client.get("/documents")
-                self.assertEqual(listed.status_code, 200)
-                self.assertEqual(listed.json()[0]["id"], document["id"])
+                    listed = client.get("/documents")
+                    self.assertEqual(listed.status_code, 200)
+                    self.assertEqual(listed.json()[0]["id"], document["id"])
+                finally:
+                    app.dependency_overrides.clear()
+
+    def test_list_documents_never_returns_another_users_registry_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry = DocumentRegistry(Path(temp_dir) / "registry.sqlite3")
+            user_store = UserStore(Path(temp_dir) / "users.sqlite3")
+            user_a = user_store.register(email="a@example.com", password="123456", full_name="User A")
+            user_b = user_store.register(email="b@example.com", password="123456", full_name="User B")
+            registry.create_job(
+                doc_id="doc-a", owner_user_id=user_a.user_id, content_sha256="hash-a", job_id="job-a",
+                file_name="a.pdf", file_type="pdf", size=1, source_path="a.pdf",
+            )
+            registry.create_job(
+                doc_id="doc-b", owner_user_id=user_b.user_id, content_sha256="hash-b", job_id="job-b",
+                file_name="b.pdf", file_type="pdf", size=1, source_path="b.pdf",
+            )
+            app.dependency_overrides[get_user_store] = lambda: user_store
+            with patch("api.routes.get_document_registry", return_value=registry):
+                client = TestClient(app)
+                app.dependency_overrides[get_current_user] = lambda: user_a
+                self.assertEqual([row["id"] for row in client.get("/documents").json()], ["doc-a"])
+                app.dependency_overrides[get_current_user] = lambda: user_b
+                self.assertEqual([row["id"] for row in client.get("/documents").json()], ["doc-b"])
+            app.dependency_overrides.clear()
