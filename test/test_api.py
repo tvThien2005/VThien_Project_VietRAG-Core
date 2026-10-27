@@ -14,7 +14,9 @@ from app import api_client
 from api.auth import CurrentUser, UserStore, get_current_user, get_user_store
 from api.main import app
 from api.routes import ChatRequest, chat, system_status
+from src.chat.history_store import ChatHistoryStore
 from src.ingestion.document_registry import DocumentRegistry
+from src.storage.rag_database import RagDatabase
 
 TEST_USER = CurrentUser(user_id="user-a", email="a@example.com", full_name="User A")
 
@@ -93,11 +95,14 @@ class TestChatConfig(TestCase):
 
 class TestChatRoute(TestCase):
 
+    @patch("api.routes.get_chat_history")
     @patch("api.routes.get_telemetry_store")
-    def test_chat_uses_yaml_values_when_ui_does_not_override_them(self, _telemetry):
+    def test_chat_uses_yaml_values_when_ui_does_not_override_them(self, _telemetry, get_history):
         rag_response = SimpleNamespace(answer="ok", sources=[], latency_seconds=0.01)
         pipeline = Mock()
         pipeline.query.return_value = rag_response
+        get_history.return_value.create_user_message.return_value = ("session-1", "user-message-1")
+        get_history.return_value.complete_response.return_value = "assistant-message-1"
         config = SimpleNamespace(
             retrieval=SimpleNamespace(
                 top_k=10,
@@ -119,8 +124,9 @@ class TestChatRoute(TestCase):
             owner_user_id="user-a",
         )
 
+    @patch("api.routes.get_chat_history")
     @patch("api.routes.get_telemetry_store")
-    def test_chat_calls_existing_pipeline_and_returns_sidebar_sources(self, _telemetry):
+    def test_chat_calls_existing_pipeline_and_returns_sidebar_sources(self, _telemetry, get_history):
         chunk = SimpleNamespace(
             chunk_id="chunk-1",
             text="Nội dung liên quan.",
@@ -135,6 +141,8 @@ class TestChatRoute(TestCase):
         )
         pipeline = Mock()
         pipeline.query.return_value = rag_response
+        get_history.return_value.create_user_message.return_value = ("session-1", "user-message-1")
+        get_history.return_value.complete_response.return_value = "assistant-message-1"
 
         config = SimpleNamespace(
             retrieval=SimpleNamespace(
@@ -165,6 +173,7 @@ class TestChatRoute(TestCase):
         self.assertEqual(result["sources"][0]["page"], 4)
         self.assertEqual(result["sources"][0]["score"], 0.87)
         self.assertEqual(result["metrics"]["total_ms"], 420)
+        self.assertEqual(result["message_id"], "assistant-message-1")
 
     def test_chat_rejects_bm25_until_pipeline_supports_it(self):
         with self.assertRaises(HTTPException) as error:
@@ -228,3 +237,48 @@ class TestDocumentsRoute(TestCase):
                 app.dependency_overrides[get_current_user] = lambda: user_b
                 self.assertEqual([row["id"] for row in client.get("/documents").json()], ["doc-b"])
             app.dependency_overrides.clear()
+
+
+class TestHistoryRoutes(TestCase):
+    def test_history_and_feedback_are_owner_scoped_and_session_delete_cascades(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = RagDatabase(Path(temp_dir) / "rag.sqlite3")
+            users = UserStore(database.db_path)
+            owner = users.register(email="history-a@example.com", password="123456", full_name="History A")
+            other = users.register(email="history-b@example.com", password="123456", full_name="History B")
+            history = ChatHistoryStore(database)
+            session_id, user_message_id = history.create_user_message(
+                owner_user_id=owner.user_id, question="Question", session_id=None,
+            )
+            answer_id = history.complete_response(
+                owner_user_id=owner.user_id, session_id=session_id, user_message_id=user_message_id,
+                answer="Answer", sources=[{
+                    "chunk_id": "chunk-1", "doc_name": "manual.pdf", "section_path": "Chapter 1",
+                    "page": 2, "score": 0.9, "text": "Not persisted",
+                }],
+            )
+            client = TestClient(app)
+            with patch("api.routes.get_chat_history", return_value=history):
+                app.dependency_overrides[get_current_user] = lambda: owner
+                try:
+                    listed = client.get("/history?page=1&page_size=1")
+                    self.assertEqual(listed.status_code, 200)
+                    self.assertEqual(listed.json()["items"][0]["session_id"], session_id)
+
+                    loaded = client.get(f"/history/{session_id}?limit=100")
+                    self.assertEqual(loaded.status_code, 200)
+                    self.assertNotIn("text", loaded.json()["messages"][1]["sources"][0])
+
+                    feedback = client.post("/feedback", json={"message_id": answer_id, "rating": "up"})
+                    self.assertEqual(feedback.status_code, 201)
+
+                    app.dependency_overrides[get_current_user] = lambda: other
+                    self.assertEqual(client.get(f"/history/{session_id}").status_code, 404)
+                    self.assertEqual(client.delete(f"/history/{session_id}").status_code, 404)
+
+                    app.dependency_overrides[get_current_user] = lambda: owner
+                    self.assertEqual(client.delete(f"/history/{session_id}").status_code, 200)
+                    with database.connection() as connection:
+                        self.assertEqual(connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0], 0)
+                finally:
+                    app.dependency_overrides.clear()

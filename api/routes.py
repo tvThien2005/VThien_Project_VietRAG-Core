@@ -4,7 +4,7 @@ from time import perf_counter
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -15,6 +15,7 @@ from src.ingestion.document_service import document_id_for_bytes, process_docume
 from src.ingestion.indexer import QdrantIndexer
 from src.logger import get_logger
 from src.monitoring.telemetry import QueryTelemetryStore
+from src.chat.history_store import ChatHistoryStore
 from api.auth import CurrentUser, UserStore, get_current_user, get_user_store, issue_access_token
 
 router = APIRouter()
@@ -30,6 +31,11 @@ def get_document_registry() -> DocumentRegistry:
 @lru_cache(maxsize=1)
 def get_telemetry_store() -> QueryTelemetryStore:
 	return QueryTelemetryStore()
+
+
+@lru_cache(maxsize=1)
+def get_chat_history() -> ChatHistoryStore:
+	return ChatHistoryStore()
 
 
 def _record_query_event(
@@ -62,6 +68,18 @@ def _record_query_event(
 		)
 	except Exception:
 		logger.exception("Không thể ghi telemetry cho query; bỏ qua để không ảnh hưởng câu trả lời.")
+
+
+def _mark_history_error_safe(history: ChatHistoryStore, *, current_user: CurrentUser, message_id: str, error: Exception) -> None:
+	"""A secondary SQLite failure must not hide the original RAG failure."""
+	try:
+		history.mark_user_message_error(
+			owner_user_id=current_user.user_id,
+			message_id=message_id,
+			error_message=f"RAG request failed: {type(error).__name__}",
+		)
+	except Exception:
+		logger.exception("Không thể đánh dấu lỗi trong lịch sử chat.")
 
 
 def _document_response(record: dict) -> dict:
@@ -294,7 +312,7 @@ def delete_document(doc_id: str, current_user: CurrentUser = Depends(get_current
 
 class ChatRequest(BaseModel):
 	question: str = Field(min_length=1, max_length=4000)
-	session_id: str | None = None
+	session_id: str | None = Field(default=None, min_length=1, max_length=64)
 	# None = dùng giá trị trong configs/config.yaml. UI hiện chỉ cho override
 	# search mode, top_k và rerank; top_n luôn thuộc cấu hình backend.
 	search_mode: Literal["vector", "hybrid", "bm25"] | None = None
@@ -317,9 +335,14 @@ def _source_payload(chunk) -> dict:
 		source = str(metadata.get("source") or "")
 		file_name = source.replace("\\", "/").rsplit("/", 1)[-1] or "Không rõ tài liệu"
 
+	section_path = metadata.get("section_path") or metadata.get("breadcrumb") or ""
+	if isinstance(section_path, (list, tuple)):
+		section_path = " > ".join(str(item) for item in section_path if str(item).strip())
+
 	return {
 		"chunk_id": chunk.chunk_id,
 		"doc_name": file_name,
+		"section_path": str(section_path),
 		"page": chunk.page_number or metadata.get("page_start"),
 		"score": float(chunk.score),
 		"text": chunk.text,
@@ -348,6 +371,21 @@ def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_u
 			detail="RAGPipeline hiện hỗ trợ tìm kiếm vector hoặc hybrid, chưa có BM25 độc lập.",
 		)
 
+	# A user question is durable before RAG execution.  If generation fails we
+	# retain only this terminal error state, never a half-written assistant row.
+	history = get_chat_history()
+	try:
+		session_id, user_message_id = history.create_user_message(
+			owner_user_id=current_user.user_id,
+			question=question,
+			session_id=request.session_id,
+		)
+	except PermissionError as exc:
+		raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện.") from exc
+	except Exception as exc:
+		logger.exception("Không thể lưu câu hỏi vào lịch sử chat.")
+		raise HTTPException(status_code=503, detail="Không thể lưu lịch sử cuộc trò chuyện.") from exc
+
 	try:
 		response = get_rag_pipeline().query(
 			query_text=question,
@@ -358,6 +396,7 @@ def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_u
 		owner_user_id=current_user.user_id,
 		)
 	except ConnectionError as exc:
+		_mark_history_error_safe(history, current_user=current_user, message_id=user_message_id, error=exc)
 		_record_query_event(
 			current_user=current_user, cfg=cfg, status="error", search_mode=search_mode, rerank=rerank,
 			top_k=top_k, top_n=top_n, source_count=0,
@@ -365,6 +404,7 @@ def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_u
 		)
 		raise HTTPException(status_code=503, detail=str(exc)) from exc
 	except Exception as exc:
+		_mark_history_error_safe(history, current_user=current_user, message_id=user_message_id, error=exc)
 		_record_query_event(
 			current_user=current_user, cfg=cfg, status="error", search_mode=search_mode, rerank=rerank,
 			top_k=top_k, top_n=top_n, source_count=0,
@@ -376,6 +416,33 @@ def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_u
 	latency_ms = round((response.latency_seconds or 0) * 1000)
 	timings_ms = dict((getattr(response, "metadata", {}) or {}).get("timings_ms", {}) or {})
 	timings_ms.setdefault("total_ms", float(latency_ms))
+	metrics_payload = {
+		"grounded": bool(sources),
+		"total_ms": latency_ms,
+		"contexts_used": len(sources),
+		"contexts_total": top_k,
+		"configured_top_n": top_n,
+	}
+	try:
+		message_id = history.complete_response(
+			owner_user_id=current_user.user_id,
+			session_id=session_id,
+			user_message_id=user_message_id,
+			answer=response.answer,
+			sources=sources,
+		)
+	except Exception as exc:
+		logger.exception("Không thể hoàn tất lịch sử chat.")
+		try:
+			history.mark_user_message_error(
+				owner_user_id=current_user.user_id,
+				message_id=user_message_id,
+				error_message=f"History write failed: {type(exc).__name__}",
+			)
+		except Exception:
+			logger.exception("Không thể đánh dấu lỗi lịch sử chat.")
+		raise HTTPException(status_code=503, detail="Không thể lưu câu trả lời vào lịch sử cuộc trò chuyện.") from exc
+
 	_record_query_event(
 		current_user=current_user,
 		cfg=cfg,
@@ -388,20 +455,73 @@ def chat(request: ChatRequest, current_user: CurrentUser = Depends(get_current_u
 		timings_ms=timings_ms,
 	)
 	return {
-		"session_id": request.session_id or uuid4().hex[:8],
-		"message_id": uuid4().hex[:8],
+		"session_id": session_id,
+		"message_id": message_id,
 		"answer": response.answer,
 		"note": None,
 		"sources": sources,
 		"rewritten_query": question,
-		"metrics": {
-			"grounded": bool(sources),
-			"total_ms": latency_ms,
-			"contexts_used": len(sources),
-			"contexts_total": top_k,
-			"configured_top_n": top_n,
-		},
+		"metrics": metrics_payload,
 	}
+
+
+class FeedbackRequest(BaseModel):
+	message_id: str = Field(min_length=1, max_length=64)
+	rating: Literal["up", "down"]
+	comment: str = Field(default="", max_length=2000)
+	category: str = Field(default="other", min_length=1, max_length=80)
+
+
+@router.get("/history")
+def list_history(
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=30, ge=1, le=100),
+	current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+	"""Return one owner-scoped page; never load every user conversation."""
+	return get_chat_history().list_sessions(
+		owner_user_id=current_user.user_id, page=page, page_size=page_size
+	)
+
+
+@router.get("/history/{session_id}")
+def get_history_session(
+	session_id: str,
+	before_created_at: str | None = Query(default=None, max_length=64),
+	limit: int = Query(default=100, ge=1, le=100),
+	current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+	try:
+		return get_chat_history().get_session_messages(
+			owner_user_id=current_user.user_id,
+			session_id=session_id,
+			before_created_at=before_created_at,
+			limit=limit,
+		)
+	except KeyError as exc:
+		raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện.") from exc
+
+
+@router.delete("/history/{session_id}")
+def delete_history_session(session_id: str, current_user: CurrentUser = Depends(get_current_user)) -> dict:
+	if not get_chat_history().delete_session(owner_user_id=current_user.user_id, session_id=session_id):
+		raise HTTPException(status_code=404, detail="Không tìm thấy cuộc trò chuyện.")
+	return {"message": "Đã xóa cuộc trò chuyện cùng messages và feedback liên quan."}
+
+
+@router.post("/feedback", status_code=status.HTTP_201_CREATED)
+def save_feedback(request: FeedbackRequest, current_user: CurrentUser = Depends(get_current_user)) -> dict:
+	try:
+		get_chat_history().save_feedback(
+			owner_user_id=current_user.user_id,
+			message_id=request.message_id,
+			rating=request.rating,
+			comment=request.comment.strip(),
+			category=request.category.strip(),
+		)
+	except KeyError as exc:
+		raise HTTPException(status_code=404, detail="Không tìm thấy câu trả lời để gửi phản hồi.") from exc
+	return {"message": "Đã lưu phản hồi."}
 
 
 @router.get("/metrics")

@@ -33,11 +33,11 @@ CHAT
                      rewritten_query,
                      metrics:{grounded, total_ms, retrieval_ms, contexts_used, contexts_total}}
 HISTORY
-  GET    /history                                                      -> [{session_id, title, updated_at}]
-  GET    /history/{session_id}   -> {messages:[{role, content, ts?, message_id?, note?, sources?, rewritten_query?, metrics?}]}
+  GET    /history?page=1&page_size=30                                  -> {items:[{session_id, title, updated_at}], has_more}
+  GET    /history/{session_id}?limit=100 -> {messages:[{role, content, status, ts?, message_id?, sources?}], has_more}
   DELETE /history/{session_id}                                         -> {message}
 FEEDBACK
-  POST   /feedback   {message_id|null, rating:"up"|"down"|null, comment, category}   -> {message}
+  POST   /feedback   {message_id, rating:"up"|"down", comment, category}   -> {message}
 CONFIG (Cấu hình Pipeline)
   Cấu hình là system-managed trong configs/config.yaml; UI chỉ hiển thị
   read-only và không gọi endpoint runtime để thay đổi pipeline.
@@ -339,16 +339,17 @@ def ask(token: str, question: str, session_id: str | None, cfg: dict) -> dict:
 # =========================================================================== #
 #  HISTORY
 # =========================================================================== #
-def list_sessions(token: str) -> list[dict]:
-    if MOCK_MODE:
+def list_sessions(token: str, page: int = 1, page_size: int = 30) -> list[dict]:
+    if MOCK_MODE and not CHAT_API_MODE:
         s = _DB["sessions"].get(_user(token), {})
         items = [{"session_id": k, "title": v["title"], "updated_at": v["updated_at"]} for k, v in s.items()]
         return sorted(items, key=lambda x: x["updated_at"], reverse=True)
-    return _request("GET", "/history", token)
+    result = _request("GET", f"/history?page={page}&page_size={page_size}", token)
+    return result.get("items", [])
 
 
 def get_session(token: str, session_id: str) -> dict:
-    if MOCK_MODE:
+    if MOCK_MODE and not CHAT_API_MODE:
         s = _DB["sessions"].get(_user(token), {}).get(session_id)
         if not s:
             raise APIError("Không tìm thấy phiên chat")
@@ -357,7 +358,7 @@ def get_session(token: str, session_id: str) -> dict:
 
 
 def delete_session(token: str, session_id: str) -> dict:
-    if MOCK_MODE:
+    if MOCK_MODE and not CHAT_API_MODE:
         _DB["sessions"].get(_user(token), {}).pop(session_id, None)
         return {"message": "ok"}
     return _request("DELETE", f"/history/{session_id}", token)
@@ -369,7 +370,7 @@ def delete_session(token: str, session_id: str) -> dict:
 def send_feedback(token: str, message_id: str | None = None, rating: str | None = None,
                   comment: str = "", category: str = "other") -> dict:
     payload = {"message_id": message_id, "rating": rating, "comment": comment, "category": category}
-    if MOCK_MODE:
+    if MOCK_MODE and not CHAT_API_MODE:
         _user(token)
         _DB["feedback"].append(payload)
         return {"message": "ok"}

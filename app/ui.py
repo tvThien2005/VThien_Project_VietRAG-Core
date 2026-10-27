@@ -283,6 +283,8 @@ box-shadow:0 4px 6px -1px rgba(0,0,0,.1),0 2px 4px -2px rgba(0,0,0,.1)}
 border-radius:4px;border:1px solid rgba(30,41,59,.8);max-height:240px;overflow-y:auto;overflow-wrap:anywhere;
 white-space:pre-wrap;scrollbar-gutter:stable}
 .chunk.dim .tx{color:var(--s400)}
+.chunk .hist-src,.chunk .sec{font-size:11px;line-height:16px;color:var(--s500)}
+.chunk .sec{color:var(--i300);overflow-wrap:anywhere}
 .chunk .r3{display:flex;justify-content:space-between;align-items:center;font-size:11px;line-height:16px;
 color:var(--s400);padding-top:4px}
 .chunk .fn{display:flex;align-items:center;gap:4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;
@@ -568,13 +570,19 @@ def thinking_html() -> str:
 def chunk_card(i: int, s: dict, hl: bool = False) -> str:
     used = s.get("used", True)
     cls = "chunk" + (" hl" if hl else "") + ("" if used else " dim")
-    low = " low" if float(s.get("score", 1)) < 0.7 else ""
+    try:
+        score = float(s.get("score", 0) or 0)
+    except (TypeError, ValueError):
+        score = 0.0
+    low = " low" if score < 0.7 else ""
     icon = ic("file-text", 14) if used else ""
+    history_notice = "" if s.get("text") else "<div class=\"hist-src\">Nội dung chunk không được lưu trong lịch sử.</div>"
+    section = (f'<div class="sec">{esc(s.get("section_path"))}</div>' if s.get("section_path") else "")
     return (f'<div class="{cls}"><div class="r1"><span class="id mono">Chunk #{i}</span>'
-            f'<span class="sc mono{low}">Similarity: {float(s.get("score", 0)):.3f}</span></div>'
-            f'<div class="tx" tabindex="0" title="Cuộn để xem toàn bộ nội dung chunk">"{esc(s["text"])}"</div>'
+            f'<span class="sc mono{low}">Similarity: {score:.3f}</span></div>'
+            f'<div class="tx" tabindex="0" title="Cuộn để xem toàn bộ nội dung chunk">"{esc(s.get("text", ""))}"</div>{history_notice}{section}'
             f'<div class="r3"><span class="fn" title="{esc(s["doc_name"])}">'
-            f'{icon}{esc(s["doc_name"])}</span><span>Trang {esc(s.get("page", "?"))}</span></div></div>')
+            f'{icon}{esc(s.get("doc_name", "Không rõ tài liệu"))}</span><span>Trang {esc(s.get("page", "?"))}</span></div></div>')
 
 
 def drawer_html(m: dict | None, use_hybrid: bool = False) -> str:

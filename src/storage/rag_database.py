@@ -37,6 +37,10 @@ class RagDatabase:
         connection = sqlite3.connect(self.db_path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        # History is written at the end of every chat request.  Wait briefly
+        # for another short-lived SQLite transaction instead of failing a
+        # perfectly valid chat because the database is momentarily busy.
+        connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
     @contextmanager
@@ -123,6 +127,63 @@ class RagDatabase:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_query_events_owner_created "
                 "ON query_events(owner_user_id, created_at DESC)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL REFERENCES chat_sessions(session_id) ON DELETE CASCADE,
+                    owner_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'complete', 'error')),
+                    error_message TEXT,
+                    sources_json TEXT,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS feedback (
+                    feedback_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    message_id TEXT NOT NULL REFERENCES chat_messages(message_id) ON DELETE CASCADE,
+                    rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+                    comment TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT 'other',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(owner_user_id, message_id)
+                )
+                """
+            )
+            # A deleted account cascades to sessions, then messages and their
+            # feedback.  Account deletion itself remains governed by the
+            # document-retention policy in the application.
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner_updated "
+                "ON chat_sessions(owner_user_id, updated_at DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created "
+                "ON chat_messages(session_id, created_at DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_messages_owner_created "
+                "ON chat_messages(owner_user_id, created_at DESC)"
             )
             if self._migrate_legacy:
                 self._copy_legacy_users(connection)

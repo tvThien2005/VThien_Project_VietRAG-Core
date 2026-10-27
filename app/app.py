@@ -545,6 +545,10 @@ def chat_feed():
         for i, m in enumerate(ss.messages):
             if m["role"] == "user":
                 st.markdown(ui.user_bubble(m), unsafe_allow_html=True)
+                if m.get("status") == "error":
+                    # Error text is rendered by Streamlit, never inserted into
+                    # the custom HTML bubble from persisted user content.
+                    st.caption("⚠️ Câu hỏi này không hoàn tất vì dịch vụ RAG gặp lỗi.")
             else:
                 st.markdown(ui.ai_message(m), unsafe_allow_html=True)
                 message_actions(i, m)

@@ -7,6 +7,7 @@ from api.auth import UserStore
 from src.ingestion.document_registry import DocumentRegistry
 from src.monitoring.telemetry import QueryTelemetryStore
 from src.storage.rag_database import RagDatabase
+from src.chat.history_store import ChatHistoryStore
 
 
 class TestRagDatabase(TestCase):
@@ -115,3 +116,53 @@ class TestRagDatabase(TestCase):
             self.assertEqual(dashboard["kpis"][3]["value"], "0.0%")
             self.assertIn("20ms", dashboard["latency"][0]["text"])
             self.assertIn("0.10ms", dashboard["latency"][3]["text"])
+
+    def test_history_keeps_compact_sources_and_cascades_session_deletion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = RagDatabase(Path(temp_dir) / "rag.sqlite3")
+            users = UserStore(database.db_path)
+            user = users.register(email="history@example.com", password="123456", full_name="History User")
+            history = ChatHistoryStore(database)
+            session_id, user_message_id = history.create_user_message(
+                owner_user_id=user.user_id, question="<script>alert(1)</script>", session_id=None,
+            )
+            assistant_message_id = history.complete_response(
+                owner_user_id=user.user_id, session_id=session_id, user_message_id=user_message_id,
+                answer="Câu trả lời", sources=[{
+                    "chunk_id": "chunk-1", "doc_name": "manual.pdf", "section_path": ["Chương 2", "Mục 2.1"],
+                    "page": 4, "score": 0.91, "text": "Không được lưu lại trong SQLite",
+                }],
+            )
+            history.save_feedback(
+                owner_user_id=user.user_id, message_id=assistant_message_id, rating="up", comment="", category="other",
+            )
+            loaded = history.get_session_messages(owner_user_id=user.user_id, session_id=session_id)
+            self.assertEqual(len(loaded["messages"]), 2)
+            source = loaded["messages"][1]["sources"][0]
+            self.assertEqual(source["section_path"], "Chương 2 > Mục 2.1")
+            self.assertNotIn("text", source)
+
+            self.assertTrue(history.delete_session(owner_user_id=user.user_id, session_id=session_id))
+            with database.connection() as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0], 0)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0], 0)
+
+    def test_history_is_owner_scoped_and_expired_sessions_are_purged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = RagDatabase(Path(temp_dir) / "rag.sqlite3")
+            users = UserStore(database.db_path)
+            owner = users.register(email="owner@example.com", password="123456", full_name="Owner")
+            other = users.register(email="other@example.com", password="123456", full_name="Other")
+            history = ChatHistoryStore(database)
+            session_id, _ = history.create_user_message(
+                owner_user_id=owner.user_id, question="Question", session_id=None,
+            )
+            self.assertEqual(history.list_sessions(owner_user_id=other.user_id)["items"], [])
+            self.assertFalse(history.delete_session(owner_user_id=other.user_id, session_id=session_id))
+            with database.connection() as connection:
+                connection.execute(
+                    "UPDATE chat_sessions SET updated_at = '2000-01-01T00:00:00+00:00' WHERE session_id = ?",
+                    (session_id,),
+                )
+            self.assertEqual(history.purge_expired(), 1)
+            self.assertEqual(history.list_sessions(owner_user_id=owner.user_id)["items"], [])
