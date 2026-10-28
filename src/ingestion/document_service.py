@@ -84,3 +84,32 @@ def process_document_job(
         )
     except Exception as exc:
         registry.mark_failed(doc_id, str(exc))
+
+
+def delete_document_job(
+    *,
+    registry: DocumentRegistry,
+    doc_id: str,
+    owner_user_id: str,
+    collection_name: str | None,
+) -> None:
+    """Delete Qdrant points in the background, then remove the registry row.
+
+    The metadata row stays in ``deleting`` while Qdrant confirms the filtered
+    delete, so the UI remains responsive and can poll a truthful state.
+    """
+    try:
+        if collection_name:
+            indexer = QdrantIndexer(collection_name=collection_name)
+            try:
+                indexer.delete_document_by_filter(
+                    collection_name=collection_name,
+                    doc_id=doc_id,
+                    owner_user_id=owner_user_id,
+                    wait=True,
+                )
+            finally:
+                indexer.client.close()
+        registry.remove(doc_id)
+    except Exception as exc:
+        registry.mark_failed(doc_id, f"Xóa tài liệu thất bại: {exc}")

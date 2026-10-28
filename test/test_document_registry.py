@@ -113,6 +113,20 @@ class TestDocumentRegistry(unittest.TestCase):
         )
         self.assertIsNone(self.registry.get_owned("document-user-a", user_b.user_id))
 
+    def test_document_page_is_owner_scoped_and_filters_names(self):
+        user = self.users.register(email="page@example.com", password="123456", full_name="Page User")
+        for index, name in enumerate(("alpha.pdf", "beta.pdf", "alpha-notes.docx")):
+            self.registry.create_job(
+                doc_id=f"doc-{index}", owner_user_id=user.user_id, content_sha256=f"hash-{index}",
+                job_id=f"job-{index}", file_name=name, file_type="pdf", size=1, source_path=name,
+            )
+        items, total = self.registry.list_documents_page(
+            user.user_id, page=1, page_size=1, query="alpha"
+        )
+        self.assertEqual(total, 2)
+        self.assertEqual(len(items), 1)
+        self.assertIn("alpha", items[0]["file_name"])
+
 
 if __name__ == "__main__":
     unittest.main()

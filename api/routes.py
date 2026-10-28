@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
@@ -11,7 +12,7 @@ from qdrant_client.http import models
 
 from src.config import PROJECT_ROOT, get_config
 from src.ingestion.document_registry import DocumentRegistry
-from src.ingestion.document_service import document_id_for_bytes, process_document_job
+from src.ingestion.document_service import delete_document_job, document_id_for_bytes, process_document_job
 from src.ingestion.indexer import QdrantIndexer
 from src.logger import get_logger
 from src.monitoring.telemetry import QueryTelemetryStore
@@ -253,20 +254,92 @@ async def upload_document(
 
 
 @router.get("/documents")
-def list_documents(current_user: CurrentUser = Depends(get_current_user)) -> list[dict]:
-	return [
-		_document_response(record)
-		for record in get_document_registry().list_documents(current_user.user_id)
-	]
+def list_documents(
+	paginated: bool = Query(default=False),
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=20, ge=1, le=100),
+	query: str | None = Query(default=None, max_length=200),
+	current_user: CurrentUser = Depends(get_current_user),
+) -> list[dict] | dict:
+	"""List documents, with an opt-in envelope for the paginated UI.
+
+	The bare list remains available for older clients using ``GET /documents``.
+	"""
+	registry = get_document_registry()
+	if not paginated:
+		return [_document_response(record) for record in registry.list_documents(current_user.user_id)]
+	records, total = registry.list_documents_page(
+		current_user.user_id, page=page, page_size=page_size, query=query
+	)
+	return {
+		"items": [_document_response(record) for record in records],
+		"page": page,
+		"page_size": page_size,
+		"total": total,
+		"total_pages": (total + page_size - 1) // page_size,
+		"active_count": registry.count_active_jobs(current_user.user_id),
+	}
+
+
+def _chunk_item(raw: dict) -> dict:
+	metadata = raw.get("metadata") or {}
+	return {
+		"chunk_id": raw.get("chunk_id", ""),
+		"text": raw.get("text", ""),
+		"page": metadata.get("page_number") or metadata.get("page_start"),
+		"chunk_index": raw.get("chunk_index", 0),
+	}
+
+
+def _artifact_chunk_page(record: dict, *, page: int, page_size: int) -> list[dict] | None:
+	"""Read only one page of local chunk artifacts, avoiding a Qdrant full scan."""
+	artifact_path = record.get("artifact_path")
+	if not artifact_path:
+		return None
+	path = Path(artifact_path)
+	if not path.is_file():
+		return None
+	start = (page - 1) * page_size
+	end = start + page_size
+	items: list[dict] = []
+	try:
+		with path.open("r", encoding="utf-8") as artifact:
+			for line_no, line in enumerate(artifact):
+				if line_no < start:
+					continue
+				if line_no >= end:
+					break
+				items.append(_chunk_item(json.loads(line)))
+	except (OSError, json.JSONDecodeError):
+		return None
+	return items
 
 
 @router.get("/documents/{doc_id}/chunks")
-def document_chunks(doc_id: str, current_user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+def document_chunks(
+	doc_id: str,
+	paginated: bool = Query(default=False),
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	current_user: CurrentUser = Depends(get_current_user),
+) -> list[dict] | dict:
 	record = get_document_registry().get_owned(doc_id, current_user.user_id)
 	if not record:
 		raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu.")
 	if record["status"] != "ready":
 		raise HTTPException(status_code=409, detail="Tài liệu chưa sẵn sàng để xem chunks.")
+
+	if paginated:
+		items = _artifact_chunk_page(record, page=page, page_size=page_size)
+		if items is not None:
+			total = int(record.get("chunk_count") or 0)
+			return {
+				"items": items,
+				"page": page,
+				"page_size": page_size,
+				"total": total,
+				"total_pages": (total + page_size - 1) // page_size,
+			}
 
 	try:
 		indexer = QdrantIndexer(collection_name=record["collection_name"])
@@ -283,31 +356,47 @@ def document_chunks(doc_id: str, current_user: CurrentUser = Depends(get_current
 			"chunk_index": payload.get("chunk_index", 0),
 		}
 
-	return [item(point) for point in sorted(points, key=lambda point: (point.payload or {}).get("chunk_index", 0))]
+	all_items = [item(point) for point in sorted(points, key=lambda point: (point.payload or {}).get("chunk_index", 0))]
+	if not paginated:
+		return all_items
+	start = (page - 1) * page_size
+	return {
+		"items": all_items[start : start + page_size],
+		"page": page,
+		"page_size": page_size,
+		"total": len(all_items),
+		"total_pages": (len(all_items) + page_size - 1) // page_size,
+	}
 
 
-@router.delete("/documents/{doc_id}")
-def delete_document(doc_id: str, current_user: CurrentUser = Depends(get_current_user)) -> dict:
-	"""Remove only one ready document's Qdrant points; keep source artifacts for audit."""
+@router.delete("/documents/{doc_id}", status_code=status.HTTP_202_ACCEPTED)
+def delete_document(
+	doc_id: str,
+	background_tasks: BackgroundTasks,
+	current_user: CurrentUser = Depends(get_current_user),
+) -> dict:
+	"""Queue a server-side filtered Qdrant delete and return immediately."""
 	registry = get_document_registry()
 	record = registry.get_owned(doc_id, current_user.user_id)
 	if not record:
 		raise HTTPException(status_code=404, detail="Không tìm thấy tài liệu.")
-	if record["status"] in {"queued", "processing"}:
-		raise HTTPException(status_code=409, detail="Không thể xóa tài liệu đang được xử lý.")
+	if record["status"] in {"queued", "processing", "deleting"}:
+		raise HTTPException(status_code=409, detail="Tài liệu đang được xử lý, chưa thể xóa.")
 	try:
-		indexer = QdrantIndexer(collection_name=record["collection_name"])
-		points = indexer._document_points(record["collection_name"], doc_id, current_user.user_id)
-		if points:
-			indexer.client.delete(
-				collection_name=record["collection_name"],
-				points_selector=models.PointIdsList(points=[str(point.id) for point in points]),
-				wait=True,
-			)
-		registry.remove(doc_id)
+		registry.mark_deleting(doc_id)
+		background_tasks.add_task(
+			delete_document_job,
+			registry=registry,
+			doc_id=doc_id,
+			owner_user_id=current_user.user_id,
+			collection_name=record.get("collection_name"),
+		)
 	except Exception as exc:
-		raise HTTPException(status_code=503, detail=f"Không thể xóa points Qdrant: {exc}") from exc
-	return {"message": "Đã xóa points của tài liệu khỏi collection; file nguồn được giữ lại để audit."}
+		raise HTTPException(status_code=503, detail=f"Không thể tạo job xóa tài liệu: {exc}") from exc
+	return {
+		**_document_response(registry.get_owned(doc_id, current_user.user_id) or record),
+		"message": "Đã đưa việc xóa vectors vào hàng đợi.",
+	}
 
 
 class ChatRequest(BaseModel):

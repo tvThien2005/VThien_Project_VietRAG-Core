@@ -244,14 +244,27 @@ def get_status(token: str) -> dict:
 # =========================================================================== #
 #  DOCUMENTS
 # =========================================================================== #
-def list_documents(token: str) -> list[dict]:
+def list_documents(token: str, page: int | None = None, page_size: int = 20, query: str = "") -> list[dict] | dict:
     if MOCK_MODE and not DOCUMENTS_API_MODE:
         docs = _docs(token)
         for d in docs.values():
             if d["status"] == "processing" and time.time() - d["_t"] > 8:
                 d["status"] = "ready"  # mock: xử lý xong sau 8 giây
-        return [{k: v for k, v in d.items() if not k.startswith("_")} for d in docs.values()]
-    return _request("GET", "/documents", token)
+        items = [{k: v for k, v in d.items() if not k.startswith("_")} for d in docs.values()]
+        if page is None:
+            return items
+        filtered = [item for item in items if query.lower() in item["name"].lower()]
+        start = (max(page, 1) - 1) * page_size
+        return {
+            "items": filtered[start:start + page_size], "page": page, "page_size": page_size,
+            "total": len(filtered), "total_pages": (len(filtered) + page_size - 1) // page_size,
+            "active_count": sum(item["status"] in {"queued", "processing", "deleting"} for item in filtered),
+        }
+    if page is None:
+        return _request("GET", "/documents", token)
+    from urllib.parse import urlencode
+    params = urlencode({"paginated": "true", "page": page, "page_size": page_size, "query": query})
+    return _request("GET", f"/documents?{params}", token)
 
 
 def upload_document(token: str, filename: str, data: bytes, mime: str) -> dict:
@@ -288,12 +301,23 @@ def delete_document(token: str, doc_id: str) -> dict:
     return _request("DELETE", f"/documents/{doc_id}", token)
 
 
-def get_chunks(token: str, doc_id: str) -> list[dict]:
+def get_chunks(token: str, doc_id: str, page: int | None = None, page_size: int = 25) -> list[dict] | dict:
     if MOCK_MODE and not DOCUMENTS_API_MODE:
         _user(token)
-        return [{"chunk_id": f"chk_{doc_id}_{i}", "page": i,
-                 "text": s["text"]} for i, s in enumerate(_SOURCES[:2], start=1)]
-    return _request("GET", f"/documents/{doc_id}/chunks", token)
+        items = [{"chunk_id": f"chk_{doc_id}_{i}", "page": i,
+                  "text": s["text"]} for i, s in enumerate(_SOURCES[:2], start=1)]
+        if page is None:
+            return items
+        start = (max(page, 1) - 1) * page_size
+        return {
+            "items": items[start:start + page_size], "page": page, "page_size": page_size,
+            "total": len(items), "total_pages": (len(items) + page_size - 1) // page_size,
+        }
+    if page is None:
+        return _request("GET", f"/documents/{doc_id}/chunks", token)
+    return _request(
+        "GET", f"/documents/{doc_id}/chunks?paginated=true&page={page}&page_size={page_size}", token
+    )
 
 
 # =========================================================================== #

@@ -67,6 +67,49 @@ class DocumentRegistry:
                 ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_documents_page(
+        self,
+        owner_user_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        query: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return one small owner-scoped page for the Streamlit document grid."""
+        page = max(1, page)
+        page_size = min(max(1, page_size), 100)
+        filters = ["owner_user_id = ?"]
+        values: list[Any] = [owner_user_id]
+        if query and query.strip():
+            filters.append("file_name LIKE ? ESCAPE '\\'")
+            escaped = query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            values.append(f"%{escaped}%")
+        where = " AND ".join(filters)
+        with self._connection() as connection:
+            total = connection.execute(
+                f"SELECT COUNT(*) FROM documents WHERE {where}", values
+            ).fetchone()[0]
+            rows = connection.execute(
+                f"""
+                SELECT * FROM documents
+                WHERE {where}
+                ORDER BY created_at DESC, file_name ASC
+                LIMIT ? OFFSET ?
+                """,
+                (*values, page_size, (page - 1) * page_size),
+            ).fetchall()
+        return [dict(row) for row in rows], int(total)
+
+    def count_active_jobs(self, owner_user_id: str) -> int:
+        with self._connection() as connection:
+            return int(connection.execute(
+                """
+                SELECT COUNT(*) FROM documents
+                WHERE owner_user_id = ? AND status IN ('queued', 'processing', 'deleting')
+                """,
+                (owner_user_id,),
+            ).fetchone()[0])
+
     def create_job(
         self,
         *,
@@ -156,6 +199,9 @@ class DocumentRegistry:
 
     def mark_failed(self, doc_id: str, message: str) -> None:
         self._update(doc_id, status="failed", error_message=message[:2000])
+
+    def mark_deleting(self, doc_id: str) -> None:
+        self._update(doc_id, status="deleting", error_message=None)
 
     def remove(self, doc_id: str) -> None:
         with self._connection() as connection:

@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -237,6 +238,69 @@ class TestDocumentsRoute(TestCase):
                 app.dependency_overrides[get_current_user] = lambda: user_b
                 self.assertEqual([row["id"] for row in client.get("/documents").json()], ["doc-b"])
             app.dependency_overrides.clear()
+
+    def test_paginated_documents_and_artifact_chunks_do_not_require_qdrant_scan(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            registry = DocumentRegistry(root / "rag.sqlite3")
+            user_store = UserStore(registry.db_path)
+            user = user_store.register(email="pages@example.com", password="123456", full_name="Pages User")
+            artifact = root / "chunks.jsonl"
+            artifact.write_text("\n".join(json.dumps({
+                "chunk_id": f"chunk-{index}", "doc_id": "doc-a", "text": f"Text {index}",
+                "chunk_index": index, "metadata": {"page_start": index + 1},
+            }) for index in range(3)), encoding="utf-8")
+            registry.create_job(
+                doc_id="doc-a", owner_user_id=user.user_id, content_sha256="hash-a", job_id="job-a",
+                file_name="alpha.pdf", file_type="pdf", size=1, source_path="alpha.pdf",
+            )
+            registry.mark_ready(
+                "doc-a", chunk_count=3, embedding_model="model", collection_name="collection",
+                artifact_path=str(artifact),
+            )
+            client = TestClient(app)
+            app.dependency_overrides[get_current_user] = lambda: user
+            with patch("api.routes.get_document_registry", return_value=registry), \
+                 patch("api.routes.QdrantIndexer") as qdrant_indexer:
+                try:
+                    documents = client.get("/documents?paginated=true&page=1&page_size=1&query=alpha")
+                    self.assertEqual(documents.status_code, 200)
+                    self.assertEqual(documents.json()["total"], 1)
+                    self.assertEqual(documents.json()["items"][0]["id"], "doc-a")
+
+                    chunks = client.get("/documents/doc-a/chunks?paginated=true&page=2&page_size=1")
+                    self.assertEqual(chunks.status_code, 200)
+                    self.assertEqual(chunks.json()["items"][0]["chunk_id"], "chunk-1")
+                    qdrant_indexer.assert_not_called()
+                finally:
+                    app.dependency_overrides.clear()
+
+    def test_delete_enqueues_filtered_background_job(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry = DocumentRegistry(Path(temp_dir) / "rag.sqlite3")
+            users = UserStore(registry.db_path)
+            user = users.register(email="delete@example.com", password="123456", full_name="Delete User")
+            registry.create_job(
+                doc_id="doc-delete", owner_user_id=user.user_id, content_sha256="hash", job_id="job",
+                file_name="delete.pdf", file_type="pdf", size=1, source_path="delete.pdf",
+            )
+            registry.mark_ready(
+                "doc-delete", chunk_count=2, embedding_model="model", collection_name="collection",
+                artifact_path="chunks.jsonl",
+            )
+            client = TestClient(app)
+            app.dependency_overrides[get_current_user] = lambda: user
+            with patch("api.routes.get_document_registry", return_value=registry), \
+                 patch("api.routes.delete_document_job") as worker:
+                try:
+                    response = client.delete("/documents/doc-delete")
+                    self.assertEqual(response.status_code, 202)
+                    self.assertEqual(response.json()["status"], "deleting")
+                    worker.assert_called_once()
+                    self.assertEqual(worker.call_args.kwargs["doc_id"], "doc-delete")
+                    self.assertEqual(worker.call_args.kwargs["owner_user_id"], user.user_id)
+                finally:
+                    app.dependency_overrides.clear()
 
 
 class TestHistoryRoutes(TestCase):

@@ -102,6 +102,10 @@ transition:background .15s}
 [data-testid="stMarkdownContainer"] p{margin:0!important}
 [data-testid="stWidgetLabel"] p{font-size:12px;line-height:16px;font-weight:500;color:var(--s300)}
 [data-testid="InputInstructions"]{display:none}
+/* Tắt hiệu ứng "mờ dần" (stale) của Streamlit khi script đang chạy lại: giao diện giữ nguyên độ sáng */
+[data-stale="true"],[data-testid="stElementContainer"][data-stale="true"],.stale-element{opacity:1!important;
+transition:none!important}
+[data-testid="stSkeleton"]{display:none!important}
 
 /* ---- icons ---- */
 .ic{display:inline-block;flex-shrink:0;background-color:currentColor;-webkit-mask:var(--u) center/contain no-repeat;
@@ -622,6 +626,8 @@ def td_status(s: str) -> str:
         return '<div class="td"><span class="pill ok"><span class="dot"></span> Ready / Indexed</span></div>'
     if s == "processing":
         return f'<div class="td"><span class="pill run">{ic("loader-circle", 12, "spin")} Vectorizing...</span></div>'
+    if s == "deleting":
+        return f'<div class="td"><span class="pill run">{ic("loader-circle", 12, "spin")} Deleting vectors...</span></div>'
     return '<div class="td"><span class="pill err">Failed</span></div>'
 
 

@@ -413,6 +413,38 @@ class QdrantIndexer:
             if offset is None:
                 return points
 
+    def delete_document_by_filter(
+        self,
+        *,
+        collection_name: str,
+        doc_id: str,
+        owner_user_id: str,
+        wait: bool = True,
+    ) -> None:
+        """Delete one owner's document without first scrolling every point.
+
+        Qdrant executes this filter server-side.  It is materially faster than
+        fetching all payloads and constructing a potentially huge ID list.
+        """
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="owner_user_id",
+                            match=models.MatchValue(value=owner_user_id),
+                        ),
+                        models.FieldCondition(
+                            key="doc_id",
+                            match=models.MatchValue(value=doc_id),
+                        ),
+                    ]
+                )
+            ),
+            wait=wait,
+        )
+
     def ensure_owner_payload_index(self, collection_name: Optional[str] = None) -> None:
         """Create the ownership filter index without recreating or rewriting points."""
         self.client.create_payload_index(

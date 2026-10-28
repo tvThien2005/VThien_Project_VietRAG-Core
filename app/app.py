@@ -41,6 +41,8 @@ SIDEBAR_JS = """
 
 ALLOWED_EXT = ["pdf", "docx"]
 MAX_MB = 10
+DOC_PAGE_SIZE = 10
+CHUNK_PAGE_SIZE = 25
 NAV = [("chat", "Chat & Playground"), ("documents", "Kho Tri Thức (KB)"),
        ("config", "Cấu hình Pipeline"), ("metrics", "Giám sát & Metrics")]
 TITLES = {"chat": "RAG Chat Playground", "documents": "Quản lý Tài liệu & Vector Database",
@@ -79,8 +81,13 @@ ensure_theme()
 for _k, _v in {"sb_open": True, "token": None, "user": None, "tab": "chat", "drawer_open": True, "sel_msg": None,
                "messages": [], "session_id": None, "fb": {}, "dz_nonce": 0, "scroll": False,
                "cfg": dict(api.DEFAULT_CONFIG), "chat_task": None, "auth_task": None,
-               "auth_notice": None, "document_count": 0, "chat_upload_nonce": 0,
-               "chat_upload_job": None, "show_logout_dialog": False, "delete_doc_to_confirm": None}.items():
+               "auth_notice": None, "auth_error": None, "document_count": 0, "chat_upload_nonce": 0,
+               "chat_upload_job": None, "show_logout_dialog": False, "delete_doc_to_confirm": None,
+               "docs_page": 1, "chunks_page": 1}.items():
+    ss.setdefault(_k, _v)
+
+for _k, _v in {"docs_polling": False, "chat_upload_active": True, "_sb_js_done": False,
+               "show_upload_dialog": False, "view_chunks_doc": None}.items():
     ss.setdefault(_k, _v)
 
 if "use_hybrid" not in ss.cfg:
@@ -139,6 +146,7 @@ def load_session():
 def delete_session():
     try:
         api.delete_session(ss.token, ss.session_id)
+        cached_sessions.clear()
         new_chat()
     except APIError as e:
         st.toast(str(e), icon="⚠️")
@@ -176,6 +184,14 @@ def request_delete_document(doc: dict):
 
 def dismiss_delete_dialog():
     ss.delete_doc_to_confirm = None
+
+
+def dismiss_upload_dialog():
+    ss.show_upload_dialog = False
+
+
+def dismiss_chunks_dialog():
+    ss.view_chunks_doc = None
 
 
 def clear_chat_upload_job():
@@ -240,19 +256,23 @@ def delete_document_confirm_dialog(doc: dict):
         try:
             api.delete_document(ss.token, doc["id"])
             cached_documents.clear()
+            cached_chunks.clear()
             dismiss_delete_dialog()
-            st.toast("Đã xóa tài liệu và các chunks liên quan.", icon="✅")
+            st.toast("Đã đưa việc xóa vectors vào hàng đợi.", icon="✅")
             st.rerun()
         except APIError as e:
             st.error(str(e))
 
 
-@st.dialog("Tải lên Tài liệu")
+@st.dialog("Tải lên Tài liệu", on_dismiss=dismiss_upload_dialog)
 def upload_dialog():
     files = st.file_uploader(f"PDF hoặc DOCX, tối đa {MAX_MB}MB/file", type=ALLOWED_EXT,
                              accept_multiple_files=True, key="dlg_up")
     if files and st.button("Tải lên", key="pri_dlg_up"):
-        if ingest(files):
+        with st.spinner("Đang tải tài liệu lên..."):
+            ok = ingest(files)
+        if ok:
+            dismiss_upload_dialog()
             st.rerun()
 
 
@@ -270,15 +290,30 @@ def crawler_dialog():
             st.error(str(e))
 
 
-@st.dialog("Chunks của tài liệu", width="large")
+@st.dialog("Chunks của tài liệu", width="large", on_dismiss=dismiss_chunks_dialog)
 def chunks_dialog(doc):
     st.markdown(f"**{doc['name']}**")
     try:
-        chunks = api.get_chunks(ss.token, doc["id"])
+        data = cached_chunks(ss.token, doc["id"], ss.chunks_page, CHUNK_PAGE_SIZE)
     except APIError as e:
         st.error(str(e))
         return
-    for i, c in enumerate(chunks, 1):
+    chunks = data["items"]
+    total_pages = data.get("total_pages", 0)
+    total = data.get("total", 0)
+    if total_pages and ss.chunks_page > total_pages:
+        ss.chunks_page = total_pages
+        st.rerun()
+    if total_pages > 1:
+        prev, label, nxt = st.columns([1, 5, 1])
+        if prev.button("←", key="chunks_prev", disabled=ss.chunks_page <= 1):
+            ss.chunks_page -= 1
+            st.rerun()
+        label.caption(f"Chunks {((ss.chunks_page - 1) * CHUNK_PAGE_SIZE) + 1}–{min(ss.chunks_page * CHUNK_PAGE_SIZE, total)} / {total}")
+        if nxt.button("→", key="chunks_next", disabled=ss.chunks_page >= total_pages):
+            ss.chunks_page += 1
+            st.rerun()
+    for i, c in enumerate(chunks, start=(ss.chunks_page - 1) * CHUNK_PAGE_SIZE + 1):
         st.markdown(ui.chunk_card(i, {"text": c["text"], "doc_name": doc["name"], "page": c.get("page"),
                                       "score": 1.0, "used": True}), unsafe_allow_html=True)
 
@@ -297,6 +332,7 @@ def _login_request(email, pwd):
 def do_login(email, pwd):
     if ss.get("auth_task"):
         return
+    ss.auth_error = None
     ss.auth_task = {
         "kind": "login",
         "future": api_request_executor().submit(_login_request, email, pwd),
@@ -306,6 +342,7 @@ def do_login(email, pwd):
 def register_account(email, pwd, name):
     if ss.get("auth_task"):
         return
+    ss.auth_error = None
     ss.auth_task = {
         "kind": "register",
         "future": api_request_executor().submit(api.register, email, pwd, name),
@@ -331,12 +368,20 @@ def auth_progress():
             result = task["future"].result()
         except APIError as e:
             ss.auth_task = None
-            st.toast(str(e), icon="⚠️")
+            message = str(e)
+            if task["kind"] == "login" and "mật khẩu" in message.lower():
+                message = "Email hoặc mật khẩu không đúng. Vui lòng kiểm tra và thử lại."
+            elif task["kind"] == "register" and "email đã tồn tại" in message.lower():
+                message = "Email này đã được sử dụng. Hãy đăng nhập hoặc dùng email khác."
+            ss.auth_error = {"kind": task["kind"], "message": message}
             st.rerun()
             return
         except Exception:
             ss.auth_task = None
-            st.toast("Không thể kết nối dịch vụ xác thực. Vui lòng thử lại.", icon="⚠️")
+            ss.auth_error = {
+                "kind": task["kind"],
+                "message": "Không thể kết nối dịch vụ xác thực. Vui lòng thử lại.",
+            }
             st.rerun()
             return
 
@@ -346,6 +391,7 @@ def auth_progress():
             ss.cfg = {**api.DEFAULT_CONFIG, **config}
         else:
             ss.auth_notice = "Tạo tài khoản thành công! Hãy chuyển sang tab Đăng nhập."
+        ss.auth_error = None
         ss.auth_task = None
         st.rerun()
 
@@ -360,6 +406,9 @@ def auth_page():
             st.markdown(ui.auth_note_html(), unsafe_allow_html=True)
         t_in, t_up = st.tabs(["Đăng nhập", "Tạo tài khoản"])
         with t_in:
+            error = ss.get("auth_error")
+            if error and error.get("kind") == "login":
+                st.error(error["message"])
             with st.form("login_form"):
                 email = st.text_input("Email", key="lg_email", disabled=pending)
                 pwd = st.text_input("Mật khẩu", type="password", key="lg_pwd", disabled=pending)
@@ -368,6 +417,9 @@ def auth_page():
                 do_login(email, pwd)
                 st.rerun()
         with t_up:
+            error = ss.get("auth_error")
+            if error and error.get("kind") == "register":
+                st.error(error["message"])
             with st.form("register_form"):
                 name = st.text_input("Họ tên", key="rg_name", disabled=pending)
                 email = st.text_input("Email", key="rg_email", disabled=pending)
@@ -414,7 +466,7 @@ def sidebar(status):
 # =========================================================================== #
 def history_bar():
     try:
-        sessions = api.list_sessions(ss.token)
+        sessions = cached_sessions(ss.token)
     except APIError:
         sessions = []
     titles = {s["session_id"]: f'{s["title"] or "Cuộc trò chuyện"} · {s["updated_at"]}' for s in sessions}
@@ -502,6 +554,7 @@ def dock():
         ss.chat_upload_nonce += 1
         if queued and queued_records:
             record = queued_records[0]
+            ss.chat_upload_active = True
             ss.chat_upload_job = {
                 "id": record.get("id"),
                 "job_id": record.get("job_id"),
@@ -539,6 +592,7 @@ def chat_feed():
                                    **{k: res.get(k) for k in ("message_id", "note", "sources", "rewritten_query", "metrics")}}]
             ss.sel_msg = len(ss.messages) - 1
             ss.scroll, ss.chat_task = True, None
+            cached_sessions.clear()  # lịch sử vừa có thêm phiên/tin nhắn mới
             # Rerun nhanh một lần để dừng polling và cập nhật drawer/history; request RAG đã hoàn tất.
             st.rerun()
 
@@ -558,21 +612,35 @@ def chat_feed():
     _render_chat_feed()
 
 
-@st.fragment(run_every=3)
 def chat_upload_status():
-    """Show a persistent, polling upload state instead of a fleeting toast."""
+    """Show a persistent upload state. Chỉ polling (3s) khi job còn đang xử lý; xong thì dừng hẳn."""
     job = ss.get("chat_upload_job")
     if not job:
         return
+
+    @st.fragment(run_every=3 if ss.get("chat_upload_active", True) else None)
+    def _render_upload_status():
+        _chat_upload_body(job)
+
+    _render_upload_status()
+
+
+def _chat_upload_body(job):
     current = job
     try:
-        documents = cached_documents(ss.token)
+        # The upload is newest, so a 100-item status page avoids restoring the
+        # old unbounded document-list request merely for this small poller.
+        documents = cached_documents(ss.token, 1, 100, "")["items"]
         current = next((doc for doc in documents if doc.get("id") == job.get("id")), job)
     except APIError:
         pass
 
     state = current.get("status", "queued")
     filename = current.get("name") or job.get("name") or "tài liệu"
+    active = state in {"queued", "processing"}
+    if active != ss.get("chat_upload_active", True):
+        ss.chat_upload_active = active  # đổi chu kỳ polling -> cần một lần rerun để áp dụng
+        st.rerun()
     if state in {"queued", "processing"}:
         with st.status(f"Đang xử lý '{filename}'", state="running", expanded=True):
             st.write("Tài liệu đã được gửi. Hệ thống đang parse, chunk và embedding vào kho tri thức.")
@@ -611,31 +679,51 @@ def page_chat():
 # =========================================================================== #
 # Tab 2: Kho tri thức
 # =========================================================================== #
-@st.fragment(run_every=3)
 def page_docs():
+    """Fragment chỉ tự làm mới (3s) khi còn tài liệu đang xử lý. Lúc rảnh không có rerun nền -> không mờ/giật."""
+    @st.fragment(run_every=3 if ss.get("docs_polling") else None)
+    def _render_docs():
+        _docs_page()
+
+    _render_docs()
+
+
+def _docs_page():
     try:
-        docs = cached_documents(ss.token)
-        ss.document_count = len(docs)
+        query = ss.get("tbl_q", "")
+        data = cached_documents(ss.token, ss.docs_page, DOC_PAGE_SIZE, query)
+        docs = data["items"]
+        ss.document_count = data["total"]
     except APIError as e:
         st.error(str(e))
         return
+    total_pages = data.get("total_pages", 0)
+    if total_pages and ss.docs_page > total_pages:
+        ss.docs_page = total_pages
+        st.rerun()
+    polling = data.get("active_count", 0) > 0
+    if polling != bool(ss.get("docs_polling")):
+        ss.docs_polling = polling  # bật/tắt polling: rerun 1 lần để áp dụng chu kỳ mới
+        st.rerun()
 
     with st.container(key="pg_docs"):
         c1, c2 = st.columns([7, 3])
-        c1.markdown(ui.page_head("Kho Tri Thức Doanh Nghiệp",
+        c1.markdown(ui.page_head("Kho Tri Thức Của Bạn",
                                  "Quản lý tài liệu nguồn, đồng bộ dữ liệu và quy trình Chunking / Embedding"),
                     unsafe_allow_html=True)
         with c2:
             with st.container(key="rowf_docs"):
                 if st.button("Tải lên Tài liệu", key="pri_upload"):
-                    upload_dialog()
+                    ss.show_upload_dialog = True
+                    st.rerun(scope="app")  # dialog được vẽ ở main()
 
         with st.container(key="dz"):
             st.markdown(ui.dropzone_html(MAX_MB), unsafe_allow_html=True)
             files = st.file_uploader("Tải lên", type=ALLOWED_EXT, accept_multiple_files=True,
                                      key=f"dz_up_{ss.dz_nonce}", label_visibility="collapsed")
         if files:
-            n = ingest(files)
+            with st.spinner("Đang tải tài liệu lên..."):
+                n = ingest(files)
             ss.dz_nonce += 1
             if n:
                 st.toast(f"Đã tải lên {n} tài liệu", icon="✅")
@@ -646,16 +734,24 @@ def page_docs():
                 b1, b2 = st.columns([1, 1])
                 kw = b1.text_input("Tìm", key="tbl_q", placeholder="Tìm kiếm tài liệu...",
                                    label_visibility="collapsed")
-                b2.markdown(f'<div class="cnt">Đã chọn {len(docs)} tài liệu</div>', unsafe_allow_html=True)
+                b2.markdown(f'<div class="cnt">{data["total"]} tài liệu</div>', unsafe_allow_html=True)
             with st.container(key="tbl_head"):
                 for col, h in zip(st.columns(DOC_COLS), DOC_HEAD):
                     col.markdown(ui.th(h, right=(h == "Thao Tác")), unsafe_allow_html=True)
-            shown = [d for d in docs if kw.lower() in d["name"].lower()]
-            if not shown:
+            if not docs:
                 st.markdown('<div class="td" style="text-align:center;color:var(--s500)">Chưa có tài liệu nào.</div>',
                             unsafe_allow_html=True)
-            for d in shown:
+            for d in docs:
                 doc_row(d)
+            if total_pages > 1:
+                prev, label, nxt = st.columns([1, 5, 1])
+                if prev.button("←", key="docs_prev", disabled=ss.docs_page <= 1):
+                    ss.docs_page -= 1
+                    st.rerun()
+                label.caption(f"Trang {ss.docs_page}/{total_pages} · Hiển thị {len(docs)}/{data['total']} tài liệu")
+                if nxt.button("→", key="docs_next", disabled=ss.docs_page >= total_pages):
+                    ss.docs_page += 1
+                    st.rerun()
 def doc_row(d):
     k = d["id"]
     with st.container(key=f"trow_{k}"):
@@ -669,8 +765,12 @@ def doc_row(d):
         with c[6]:
             with st.container(key=f"rowf_a_{k}"):
                 if st.button("Xem Chunks", key=f"lnk_view_{k}", disabled=d["status"] != "ready"):
-                    chunks_dialog(d)
-                if st.button("Hủy" if d["status"] == "processing" else "Xóa", key=f"dng_del_{k}"):
+                    ss.view_chunks_doc = {"id": d["id"], "name": d["name"]}
+                    ss.chunks_page = 1
+                    st.rerun(scope="app")
+                deleting = d["status"] in {"queued", "processing", "deleting"}
+                label = "Đang xử lý" if deleting else "Xóa"
+                if st.button(label, key=f"dng_del_{k}", disabled=deleting):
                     request_delete_document(d)
                     # A button inside a fragment normally reruns that fragment
                     # only.  The confirmation modal is rendered by main(), so
@@ -682,7 +782,7 @@ def doc_row(d):
 # =========================================================================== #
 def page_metrics():
     try:
-        data = api.get_metrics(ss.token)
+        data = cached_metrics(ss.token)
     except APIError as e:
         st.error(str(e))
         return
@@ -695,9 +795,24 @@ def page_metrics():
 
 
 @st.cache_data(ttl=2, show_spinner=False)
-def cached_documents(token: str) -> list[dict]:
+def cached_documents(token: str, page: int, page_size: int, query: str) -> dict:
     """Poll documents only while the documents fragment is visible."""
-    return api.list_documents(token)
+    return api.list_documents(token, page=page, page_size=page_size, query=query)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def cached_chunks(token: str, doc_id: str, page: int, page_size: int) -> dict:
+    return api.get_chunks(token, doc_id, page=page, page_size=page_size)
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def cached_sessions(token: str) -> list[dict]:
+    return api.list_sessions(token)
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def cached_metrics(token: str) -> dict:
+    return api.get_metrics(token)
 
 
 @st.cache_data(ttl=90, show_spinner=False)
@@ -738,9 +853,11 @@ def main():
         return
 
     # tiêm JS vào trang cha 1 lần (tay nắm kéo độ rộng sidebar)
-    run_js("<script>(function(){var p=window.parent;if(p.__sbInit)return;p.__sbInit=true;"
-           "var s=p.document.createElement('script');s.textContent=" + json.dumps(SIDEBAR_JS) +
-           ";p.document.head.appendChild(s);})();</script>")
+    if not ss.get("_sb_js_done"):
+        run_js("<script>(function(){var p=window.parent;if(p.__sbInit)return;p.__sbInit=true;"
+               "var s=p.document.createElement('script');s.textContent=" + json.dumps(SIDEBAR_JS) +
+               ";p.document.head.appendChild(s);})();</script>")
+        ss._sb_js_done = True
     sidebar(status)
     if ss.get("show_logout_dialog"):
         logout_confirm_dialog()
@@ -752,6 +869,10 @@ def main():
         page_docs()
         if ss.get("delete_doc_to_confirm"):
             delete_document_confirm_dialog(ss.delete_doc_to_confirm)
+        elif ss.get("show_upload_dialog"):
+            upload_dialog()
+        elif ss.get("view_chunks_doc"):
+            chunks_dialog(ss.view_chunks_doc)
     elif ss.tab == "config":
         page_config()
     else:

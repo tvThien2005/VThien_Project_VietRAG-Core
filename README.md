@@ -64,11 +64,11 @@ Configuration: **Hybrid Search + BGE Reranker + `eval_prompt.yaml`**
 
 ### Retrieval Performance
 
-| Metric                     | Score  |
-| -------------------------- | ------ |
-| Hit Rate @ 1               | 67.5% |
-| Hit Rate @ 3               | 92.5% |
-| Hit Rate @ 5               | 95.0% |
+| Metric                     | Score   |
+| -------------------------- | ------- |
+| Hit Rate @ 1               | 67.5%   |
+| Hit Rate @ 3               | 92.5%   |
+| Hit Rate @ 5               | 95.0%   |
 | MRR (Mean Reciprocal Rank) | 79.375% |
 | Context Recall             | 90.625% |
 
@@ -82,7 +82,6 @@ Configuration: **Hybrid Search + BGE Reranker + `eval_prompt.yaml`**
 | Token Precision              | 34.38% |
 | Token Recall                 | 65.34% |
 
-
 ### Anti-Hallucination
 
 | Metric                 | Score       |
@@ -94,9 +93,9 @@ Configuration: **Hybrid Search + BGE Reranker + `eval_prompt.yaml`**
 
 | Configuration          | Hit@1      | Hit@3      | MRR        | Context Recall |
 | ---------------------- | ---------- | ---------- | ---------- | -------------- |
-| Dense Only (no rerank) | 67.5%     | 92.5%     | 79.375%     | 90.625%         |
+| Dense Only (no rerank) | 67.5%      | 92.5%      | 79.375%    | 90.625%        |
 | Hybrid + Rerank ✅     | **80.00%** | **95.00%** | **88.75%** | **99.38%**     |
-| Δ Improvement          | +13.5%     | +0.25%     | +9.375%     | +9.38.42%        |
+| Δ Improvement          | +13.5%     | +0.25%     | +9.375%    | +9.38.42%      |
 
 ---
 
