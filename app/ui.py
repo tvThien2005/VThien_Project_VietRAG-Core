@@ -65,7 +65,7 @@ ICON_BUTTONS = {
     ".st-key-ico_logout": "log-out", ".st-key-drawer_close": "x", ".st-key-drawer_reopen": "layers",
     '[class*="st-key-fbup_"]': "thumbs-up", '[class*="st-key-fbdn_"]': "thumbs-down",
     '[class*="st-key-ctx_"]': "file-search", ".st-key-hist_new": "plus", ".st-key-hist_del": "trash-2",
-    ".st-key-sec_crawl": "link", ".st-key-pri_upload": "upload",
+    ".st-key-pri_upload": "upload",
     ".st-key-ico_sb_close": "panel-left-close", ".st-key-ico_sb_open": "panel-left-open",
 }
 _ICON_SEL = ",".join(f"{s} button p::before" for s in ICON_BUTTONS)
@@ -326,7 +326,7 @@ font-size:14px;line-height:20px;font-weight:600;color:var(--s200)}.cfg-ro-panel-
 font-weight:500;gap:8px}
 [class*="sec_"] button p,[class*="pri_"] button p{display:flex;align-items:center;gap:8px;font-size:14px;
 line-height:20px}
-.st-key-sec_crawl button p::before,.st-key-pri_upload button p::before{width:16px;height:16px}
+.st-key-pri_upload button p::before{width:16px;height:16px}
 .st-key-pri_upload button,.st-key-pri_save button{box-shadow:0 10px 15px -3px rgba(79,70,229,.2),
 0 4px 6px -4px rgba(79,70,229,.2)!important}
 .st-key-sec_reset button,.st-key-pri_save button{font-size:12px;line-height:16px;padding:10px 20px;border:0}
@@ -398,8 +398,6 @@ border-radius:16px;padding:32px}
 .st-key-auth [data-testid="stFormSubmitButton"] button{width:100%;background:var(--i600)!important;color:#fff!important;
 border:0!important;padding:10px 16px;font-size:14px;line-height:20px;margin-top:8px}
 .st-key-auth [data-testid="stForm"]{border:0;padding:16px 0 0}
-.mocknote{font-size:12px;line-height:16px;color:var(--s400);background:var(--s900);border:1px solid var(--s800);
-border-radius:8px;padding:10px 12px;margin-bottom:16px}
 """
 
 _NAV_ICON_CSS = (f"{_ICON_SEL}{{content:\"\";display:block;flex-shrink:0;background:currentColor;"
@@ -670,6 +668,3 @@ def rerank_html() -> str:
              'ưu tiên của Chunks dựa trên mô hình Re-rank chuyên dụng giúp tăng 35% độ chính xác.</div></div>')
 
 
-def auth_note_html() -> str:
-    return ('<div class="mocknote">Đang chạy <b>chế độ mock</b> (chưa nối backend). '
-            'Tài khoản test: <b>email</b> / <b>123456</b>.</div>')

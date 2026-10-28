@@ -66,7 +66,6 @@ class TestChatConfig(TestCase):
         self.assertFalse(api_client.DEFAULT_CONFIG["rerank"])
 
     @patch("app.api_client._request")
-    @patch("app.api_client.MOCK_MODE", False)
     def test_ask_sends_selected_hybrid_and_rerank_options(self, request):
         request.return_value = {"answer": "ok"}
         config = {
@@ -84,8 +83,7 @@ class TestChatConfig(TestCase):
         self.assertFalse(payload["hyde"])
 
     @patch("app.api_client._request")
-    @patch("app.api_client.DOCUMENTS_API_MODE", True)
-    def test_upload_uses_real_documents_api_when_enabled(self, request):
+    def test_upload_uses_real_documents_api(self, request):
         request.return_value = {"job_id": "job-1", "status": "queued"}
 
         api_client.upload_document("token", "policy.pdf", b"pdf", "application/pdf")

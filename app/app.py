@@ -276,20 +276,6 @@ def upload_dialog():
             st.rerun()
 
 
-@st.dialog("Kết nối Web Crawler")
-def crawler_dialog():
-    url = st.text_input("URL cần thu thập", placeholder="https://docs.company.com/api-v2", key="crawl_url")
-    if st.button("Bắt đầu thu thập", key="pri_crawl_go"):
-        if not url.startswith(("http://", "https://")):
-            st.warning("URL phải bắt đầu bằng http:// hoặc https://")
-            return
-        try:
-            api.crawl_url(ss.token, url)
-            st.rerun()
-        except APIError as e:
-            st.error(str(e))
-
-
 @st.dialog("Chunks của tài liệu", width="large", on_dismiss=dismiss_chunks_dialog)
 def chunks_dialog(doc):
     st.markdown(f"**{doc['name']}**")
@@ -402,8 +388,6 @@ def auth_page():
     pending = bool(ss.get("auth_task"))
     with st.container(key="auth"):
         st.markdown(ui.logo_html(), unsafe_allow_html=True)
-        if api.MOCK_MODE and not api.AUTH_API_MODE:
-            st.markdown(ui.auth_note_html(), unsafe_allow_html=True)
         t_in, t_up = st.tabs(["Đăng nhập", "Tạo tài khoản"])
         with t_in:
             error = ss.get("auth_error")
