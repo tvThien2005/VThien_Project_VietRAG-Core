@@ -112,6 +112,55 @@ Các chế độ tương ứng: `false/false` = dense-only; `true/false` = dense
 
 ## 🚀 Chạy demo
 
+### 🐳 Chạy bằng Docker
+
+Docker Compose khởi động Qdrant, FastAPI và Streamlit. Dữ liệu Qdrant,
+SQLite/tài liệu tải lên, và Hugging Face model cache được giữ trong Docker
+named volumes nên vẫn còn sau khi khởi động lại container.
+
+1. Tạo file cấu hình bí mật và điền `GROQ_API_KEY`:
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+   Nếu triển khai thật, đặt thêm `RAG_ENV=production` và
+   `RAG_AUTH_SECRET` ngẫu nhiên dài ít nhất 32 ký tự trong `.env`.
+
+2. Container mặc định dùng CPU cho embedding/reranker; điều này không làm
+   thay đổi `configs/config.yaml`. Nếu Docker đã được cấu hình NVIDIA GPU,
+   đặt `EMBEDDING_DEVICE=cuda` và `RERANKER_DEVICE=cuda` trong `.env` và thêm
+   GPU reservation phù hợp với môi trường Docker của bạn. API hiện dùng Groq
+   mặc định. Nếu chuyển sang Ollama chạy trên máy host, đặt
+   `OLLAMA_BASE_URL=http://host.docker.internal:11434` trong `.env`.
+
+3. Build và chạy dịch vụ:
+
+   ```powershell
+   docker compose up --build -d
+   ```
+
+   - Giao diện: `http://localhost:8501`
+   - API health: `http://localhost:8000/health`
+   - API docs: `http://localhost:8000/docs`
+   - Qdrant dashboard: `http://localhost:6333/dashboard`
+
+   Lần chạy đầu có thể lâu vì image cài PyTorch và API tải model embedding
+   khi cần. Xem log bằng `docker compose logs -f api`.
+
+4. Khởi tạo collection (chỉ cần một lần cho một Qdrant volume mới):
+
+   ```powershell
+   docker compose exec api python scripts/create_demo_collection.py --collection vietnamese_docs_demo_20261026
+   ```
+
+   Giá trị `--collection` phải trùng `vector_store.collection_name` trong
+   `configs/config.yaml`. Không chạy lệnh với `--recreate` nếu chưa sao lưu
+   dữ liệu.
+
+Dừng các dịch vụ mà vẫn giữ dữ liệu: `docker compose down`. Để xóa toàn bộ
+dữ liệu Docker của ứng dụng: `docker compose down -v`.
+
 ### 🖥️ Demo RAG
 
 Yêu cầu Python, Docker Desktop, khóa Groq (hoặc cấu hình Ollama), và đủ bộ nhớ để tải/chạy embedding cùng reranker. Trên máy không có GPU NVIDIA, đổi `embedding.device` và `retrieval.reranker.bge.device` trong `configs/config.yaml` thành `cpu`.

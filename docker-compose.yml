@@ -1,34 +1,77 @@
-version: '3.8'
+name: vietnamese-rag
 
 services:
   qdrant:
-    image: qdrant/qdrant:latest
-    container_name: vietnamese-rag-qdrant
+    image: qdrant/qdrant:v1.16.3
     restart: unless-stopped
     ports:
-      # Cổng 6333: HTTP API & Web Dashboard (http://localhost:6333/dashboard)
       - "6333:6333"
-      # Cổng 6334: gRPC API (dành cho kết nối hiệu năng cao)
       - "6334:6334"
     volumes:
-      # Lưu trữ dữ liệu vector bền vững qua Named Volume (tối ưu tốc độ đọc ghi trên Windows/WSL2)
       - qdrant_storage:/qdrant/storage
-      # Nếu muốn mount trực tiếp ra thư mục máy tính, bỏ comment dòng dưới và comment dòng trên:
-      # - ./data/qdrant_storage:/qdrant/storage
     environment:
-      # Bật Web UI Dashboard
-      - QDRANT__SERVICE__ENABLE_STATIC_CONTENT=true
-      # Mức độ ghi log: INFO | DEBUG | WARN | ERROR
-      - QDRANT__LOG_LEVEL=INFO
-      # Tắt gửi telemetry ẩn danh (tùy chọn)
-      - QDRANT__TELEMETRY_DISABLED=true
+      QDRANT__SERVICE__ENABLE_STATIC_CONTENT: "true"
+      QDRANT__LOG_LEVEL: INFO
+      QDRANT__TELEMETRY_DISABLED: "true"
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 5s
+      retries: 6
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >-
+      uvicorn api.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cpu}
+      RERANKER_DEVICE: ${RERANKER_DEVICE:-cpu}
+      # Set this to an externally running Ollama server when the configured
+      # provider in configs/config.yaml is `ollama`.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      - app_data:/app/data/raw
+      - app_state:/app/data/processed
+      - huggingface_cache:/root/.cache/huggingface
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >-
+      streamlit run app/app.py --server.address 0.0.0.0 --server.port 8501
+    environment:
+      RAG_API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   qdrant_storage:
-    name: vietnamese_rag_qdrant_data
+  app_data:
+  app_state:
+  huggingface_cache:

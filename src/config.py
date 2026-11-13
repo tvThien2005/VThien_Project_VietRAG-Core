@@ -286,6 +286,17 @@ def load_config(config_path: Optional[Path | str] = None) -> AppConfig:
     if env_ollama_url:
         config.llm.ollama.base_url = env_ollama_url
 
+    # Containers normally do not have a CUDA runtime.  Keep the YAML defaults
+    # for local development, while allowing Docker (or a GPU deployment) to
+    # select a suitable device without editing the tracked configuration file.
+    env_embedding_device = os.getenv("EMBEDDING_DEVICE")
+    if env_embedding_device:
+        config.embedding.device = env_embedding_device
+
+    env_reranker_device = os.getenv("RERANKER_DEVICE")
+    if env_reranker_device:
+        config.retrieval.reranker.bge.device = env_reranker_device
+
     return config
 
 
